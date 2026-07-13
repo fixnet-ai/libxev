@@ -719,7 +719,12 @@ pub const Completion = struct {
                     .CANCELED => error.Canceled,
                     .PIPE => error.BrokenPipe,
                     .CONNRESET => error.ConnectionResetByPeer,
-                    else => |errno| posix.unexpectedErrno(errno),
+                    .ADDRNOTAVAIL => error.AddressNotAvailable,
+                    .HOSTUNREACH, .NETUNREACH => error.NetworkUnreachable,
+                    else => |errno| blk: {
+                        if (@intFromEnum(errno) == 64) break :blk error.ConnectionResetByPeer;
+                        break :blk posix.unexpectedErrno(errno);
+                    },
                 },
             },
 
@@ -730,7 +735,12 @@ pub const Completion = struct {
                     .CANCELED => error.Canceled,
                     .PIPE => error.BrokenPipe,
                     .CONNRESET => error.ConnectionResetByPeer,
-                    else => |errno| posix.unexpectedErrno(errno),
+                    .ADDRNOTAVAIL => error.AddressNotAvailable,
+                    .HOSTUNREACH, .NETUNREACH => error.NetworkUnreachable,
+                    else => |errno| blk: {
+                        if (@intFromEnum(errno) == 64) break :blk error.ConnectionResetByPeer;
+                        break :blk posix.unexpectedErrno(errno);
+                    },
                 },
             },
 
@@ -785,7 +795,12 @@ pub const Completion = struct {
                     .CANCELED => error.Canceled,
                     // If a write is interrupted, we retry it automatically.
                     .INTR => return .rearm,
-                    else => |errno| posix.unexpectedErrno(errno),
+                    .ADDRNOTAVAIL => error.AddressNotAvailable,
+                    .HOSTUNREACH, .NETUNREACH => error.ConnectionResetByPeer,
+                    else => |errno| blk: {
+                        if (@intFromEnum(errno) == 64) break :blk error.ConnectionResetByPeer;
+                        break :blk posix.unexpectedErrno(errno);
+                    },
                 },
             },
 
@@ -796,7 +811,12 @@ pub const Completion = struct {
                     .CANCELED => error.Canceled,
                     // If a write is interrupted, we retry it automatically.
                     .INTR => return .rearm,
-                    else => |errno| posix.unexpectedErrno(errno),
+                    .ADDRNOTAVAIL => error.AddressNotAvailable,
+                    .HOSTUNREACH, .NETUNREACH => error.ConnectionResetByPeer,
+                    else => |errno| blk: {
+                        if (@intFromEnum(errno) == 64) break :blk error.ConnectionResetByPeer;
+                        break :blk posix.unexpectedErrno(errno);
+                    },
                 },
             },
 
@@ -832,7 +852,13 @@ pub const Completion = struct {
         return switch (@as(posix.E, @enumFromInt(-res))) {
             .CANCELED => error.Canceled,
             .CONNRESET => error.ConnectionResetByPeer,
-            else => |errno| posix.unexpectedErrno(errno),
+            .ADDRNOTAVAIL => error.AddressNotAvailable,
+            .HOSTUNREACH, .NETUNREACH => error.ConnectionResetByPeer,
+            else => |errno| {
+                // EHOSTDOWN (Linux errno 64): destination host is down.
+                if (@intFromEnum(errno) == 64) return error.ConnectionResetByPeer;
+                return posix.unexpectedErrno(errno);
+            },
         };
     }
 };
@@ -1086,6 +1112,7 @@ pub const ReadError = error{
     EOF,
     Canceled,
     Unexpected,
+    AddressNotAvailable,
     ConnectionResetByPeer,
 };
 
@@ -1098,6 +1125,8 @@ pub const ShutdownError = error{
 pub const WriteError = error{
     Canceled,
     BrokenPipe,
+    AddressNotAvailable,
+    NetworkUnreachable,
     ConnectionResetByPeer,
     Unexpected,
 };

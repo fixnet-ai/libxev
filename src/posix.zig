@@ -94,6 +94,7 @@ pub const net = struct {
 
 pub const ReadError = error{
     AccessDenied,
+    AddressNotAvailable,
     InputOutput,
     IsDir,
     NotOpenForReading,
@@ -109,6 +110,7 @@ pub const PReadError = ReadError || error{Unseekable};
 
 pub const WriteError = error{
     AccessDenied,
+    AddressNotAvailable,
     BrokenPipe,
     DeviceBusy,
     DiskQuota,
@@ -148,11 +150,13 @@ pub const SendError = error{
 } || posix.UnexpectedError;
 
 pub const RecvFromError = error{
+    AddressNotAvailable,
     ConnectionRefused,
     ConnectionResetByPeer,
     ConnectionTimedOut,
     MessageTooBig,
     NetworkSubsystemFailed,
+    NetworkUnreachable,
     SocketNotBound,
     SocketNotConnected,
     SystemResources,
@@ -452,7 +456,13 @@ pub fn write(fd: posix.fd_t, bytes: []const u8) WriteError!usize {
             .MSGSIZE => return error.MessageTooBig,
             .NOBUFS, .NOMEM => return error.SystemResources,
             .FAULT, .DESTADDRREQ => unreachable,
-            else => |err| return posix.unexpectedErrno(err),
+            .ADDRNOTAVAIL => return error.AddressNotAvailable,
+            .HOSTUNREACH, .NETUNREACH => return error.ConnectionResetByPeer,
+            else => |err| {
+                // EHOSTDOWN (Linux errno 64): host is down, treat as connection reset.
+                if (@intFromEnum(err) == 64) return error.ConnectionResetByPeer;
+                return posix.unexpectedErrno(err);
+            },
         }
     }
 }
@@ -481,7 +491,13 @@ pub fn read(fd: posix.fd_t, buf: []u8) ReadError!usize {
             .CONNRESET => return error.ConnectionResetByPeer,
             .TIMEDOUT => return error.ConnectionTimedOut,
             .FAULT, .INVAL => unreachable,
-            else => |err| return posix.unexpectedErrno(err),
+            .ADDRNOTAVAIL => return error.AddressNotAvailable,
+            .HOSTUNREACH, .NETUNREACH => return error.ConnectionResetByPeer,
+            else => |err| {
+                // EHOSTDOWN (Linux errno 64): host is down, treat as connection reset.
+                if (@intFromEnum(err) == 64) return error.ConnectionResetByPeer;
+                return posix.unexpectedErrno(err);
+            },
         }
     }
 }
@@ -595,7 +611,11 @@ pub fn sendto(
             .NETDOWN => return error.NetworkSubsystemFailed,
             .ADDRNOTAVAIL => return error.AddressNotAvailable,
             .BADF, .DESTADDRREQ, .FAULT, .ISCONN, .NOTSOCK, .OPNOTSUPP => unreachable,
-            else => |err| return posix.unexpectedErrno(err),
+            else => |err| {
+                // EHOSTDOWN (Linux errno 64): destination host is down.
+                if (@intFromEnum(err) == 64) return error.NetworkUnreachable;
+                return posix.unexpectedErrno(err);
+            },
         }
     }
 }
@@ -619,7 +639,12 @@ pub fn sendmsg(sockfd: posix.socket_t, msg: *const std.os.linux.msghdr_const, fl
             .NETDOWN => return error.NetworkSubsystemFailed,
             .NETUNREACH, .HOSTUNREACH => return error.NetworkUnreachable,
             .BADF, .DESTADDRREQ, .FAULT, .INVAL, .ISCONN, .NOTSOCK, .OPNOTSUPP => unreachable,
-            else => |err| return posix.unexpectedErrno(err),
+            .ADDRNOTAVAIL => return error.AddressNotAvailable,
+            else => |err| {
+                // EHOSTDOWN (Linux errno 64): destination host is down.
+                if (@intFromEnum(err) == 64) return error.NetworkUnreachable;
+                return posix.unexpectedErrno(err);
+            },
         }
     }
 }
@@ -647,7 +672,14 @@ pub fn recvfrom(
             .CONNRESET => return error.ConnectionResetByPeer,
             .TIMEDOUT => return error.ConnectionTimedOut,
             .BADF, .FAULT, .INVAL, .NOTSOCK => unreachable,
-            else => |err| return posix.unexpectedErrno(err),
+            .ADDRNOTAVAIL => return error.AddressNotAvailable,
+            .HOSTUNREACH, .NETUNREACH => return error.NetworkUnreachable,
+            else => |err| {
+                // EHOSTDOWN (Linux errno 64) not defined on all platforms;
+                // use integer comparison for cross-platform safety.
+                if (@intFromEnum(err) == 64) return error.NetworkSubsystemFailed;
+                return posix.unexpectedErrno(err);
+            },
         }
     }
 }

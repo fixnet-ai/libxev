@@ -1523,6 +1523,10 @@ fn mapReadError(err: anyerror) ReadError {
     return switch (err) {
         error.AccessDenied, error.PermissionDenied => error.PermissionDenied,
         error.WouldBlock => error.MissingKevent,
+        error.AddressNotAvailable => error.AddressNotAvailable,
+        error.NetworkSubsystemFailed => error.NetworkSubsystemFailed,
+        error.NetworkUnreachable => error.NetworkUnreachable,
+        error.ConnectionResetByPeer => error.ConnectionResetByPeer,
         else => error.Unexpected,
     };
 }
@@ -1530,6 +1534,10 @@ fn mapReadError(err: anyerror) ReadError {
 fn mapWriteError(err: anyerror) WriteError {
     return switch (err) {
         error.AccessDenied, error.PermissionDenied => error.PermissionDenied,
+        error.AddressNotAvailable => error.AddressNotAvailable,
+        error.ConnectionResetByPeer => error.ConnectionResetByPeer,
+        error.NetworkUnreachable => error.NetworkUnreachable,
+        error.BrokenPipe => error.BrokenPipe,
         else => error.Unexpected,
     };
 }
@@ -1727,12 +1735,20 @@ pub const ReadError = KEventError || error{
     MissingKevent,
     PermissionDenied,
     Unexpected,
+    AddressNotAvailable,
+    NetworkSubsystemFailed,
+    NetworkUnreachable,
+    ConnectionResetByPeer,
 };
 
 pub const WriteError = KEventError || error{
     Canceled,
     PermissionDenied,
     Unexpected,
+    AddressNotAvailable,
+    NetworkUnreachable,
+    ConnectionResetByPeer,
+    BrokenPipe,
 };
 
 pub const MachPortError = KEventError || error{
