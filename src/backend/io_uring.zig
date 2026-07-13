@@ -721,6 +721,7 @@ pub const Completion = struct {
                     .CONNRESET => error.ConnectionResetByPeer,
                     .ADDRNOTAVAIL => error.AddressNotAvailable,
                     .HOSTUNREACH, .NETUNREACH => error.NetworkUnreachable,
+                    .BADF, .FAULT, .INVAL, .NOTSOCK => error.SocketNotConnected,
                     else => |errno| blk: {
                         if (@intFromEnum(errno) == 64) break :blk error.ConnectionResetByPeer;
                         break :blk posix.unexpectedErrno(errno);
@@ -737,6 +738,7 @@ pub const Completion = struct {
                     .CONNRESET => error.ConnectionResetByPeer,
                     .ADDRNOTAVAIL => error.AddressNotAvailable,
                     .HOSTUNREACH, .NETUNREACH => error.NetworkUnreachable,
+                    .BADF, .FAULT, .INVAL, .NOTSOCK => error.SocketNotConnected,
                     else => |errno| blk: {
                         if (@intFromEnum(errno) == 64) break :blk error.ConnectionResetByPeer;
                         break :blk posix.unexpectedErrno(errno);
@@ -854,6 +856,7 @@ pub const Completion = struct {
             .CONNRESET => error.ConnectionResetByPeer,
             .ADDRNOTAVAIL => error.AddressNotAvailable,
             .HOSTUNREACH, .NETUNREACH => error.ConnectionResetByPeer,
+            .BADF, .FAULT, .INVAL, .NOTSOCK => error.SocketNotConnected,
             else => |errno| {
                 // EHOSTDOWN (Linux errno 64): destination host is down.
                 if (@intFromEnum(errno) == 64) return error.ConnectionResetByPeer;
@@ -1114,6 +1117,7 @@ pub const ReadError = error{
     Unexpected,
     AddressNotAvailable,
     ConnectionResetByPeer,
+    SocketNotConnected,
 };
 
 pub const ShutdownError = error{
@@ -1128,6 +1132,7 @@ pub const WriteError = error{
     AddressNotAvailable,
     NetworkUnreachable,
     ConnectionResetByPeer,
+    SocketNotConnected,
     Unexpected,
 };
 

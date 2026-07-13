@@ -610,7 +610,8 @@ pub fn sendto(
             .NOTCONN => return error.SocketNotConnected,
             .NETDOWN => return error.NetworkSubsystemFailed,
             .ADDRNOTAVAIL => return error.AddressNotAvailable,
-            .BADF, .DESTADDRREQ, .FAULT, .ISCONN, .NOTSOCK, .OPNOTSUPP => unreachable,
+            .BADF, .DESTADDRREQ, .FAULT, .ISCONN, .NOTSOCK => return error.SocketNotConnected,
+            .OPNOTSUPP => return error.NetworkSubsystemFailed,
             else => |err| {
                 // EHOSTDOWN (Linux errno 64): destination host is down.
                 if (@intFromEnum(err) == 64) return error.NetworkUnreachable;
@@ -638,7 +639,8 @@ pub fn sendmsg(sockfd: posix.socket_t, msg: *const std.os.linux.msghdr_const, fl
             .NOTCONN => return error.SocketNotConnected,
             .NETDOWN => return error.NetworkSubsystemFailed,
             .NETUNREACH, .HOSTUNREACH => return error.NetworkUnreachable,
-            .BADF, .DESTADDRREQ, .FAULT, .INVAL, .ISCONN, .NOTSOCK, .OPNOTSUPP => unreachable,
+            .BADF, .DESTADDRREQ, .FAULT, .INVAL, .ISCONN, .NOTSOCK => return error.SocketNotConnected,
+            .OPNOTSUPP => return error.NetworkSubsystemFailed,
             .ADDRNOTAVAIL => return error.AddressNotAvailable,
             else => |err| {
                 // EHOSTDOWN (Linux errno 64): destination host is down.
@@ -671,7 +673,7 @@ pub fn recvfrom(
             .CONNREFUSED => return error.ConnectionRefused,
             .CONNRESET => return error.ConnectionResetByPeer,
             .TIMEDOUT => return error.ConnectionTimedOut,
-            .BADF, .FAULT, .INVAL, .NOTSOCK => unreachable,
+            .BADF, .FAULT, .INVAL, .NOTSOCK => return error.SocketNotConnected,
             .ADDRNOTAVAIL => return error.AddressNotAvailable,
             .HOSTUNREACH, .NETUNREACH => return error.NetworkUnreachable,
             else => |err| {

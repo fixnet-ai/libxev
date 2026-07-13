@@ -1527,6 +1527,7 @@ fn mapReadError(err: anyerror) ReadError {
         error.NetworkSubsystemFailed => error.NetworkSubsystemFailed,
         error.NetworkUnreachable => error.NetworkUnreachable,
         error.ConnectionResetByPeer => error.ConnectionResetByPeer,
+        error.SocketNotConnected => error.SocketNotConnected,
         else => error.Unexpected,
     };
 }
@@ -1538,6 +1539,7 @@ fn mapWriteError(err: anyerror) WriteError {
         error.ConnectionResetByPeer => error.ConnectionResetByPeer,
         error.NetworkUnreachable => error.NetworkUnreachable,
         error.BrokenPipe => error.BrokenPipe,
+        error.SocketNotConnected => error.SocketNotConnected,
         else => error.Unexpected,
     };
 }
@@ -1739,6 +1741,7 @@ pub const ReadError = KEventError || error{
     NetworkSubsystemFailed,
     NetworkUnreachable,
     ConnectionResetByPeer,
+    SocketNotConnected,
 };
 
 pub const WriteError = KEventError || error{
@@ -1749,6 +1752,7 @@ pub const WriteError = KEventError || error{
     NetworkUnreachable,
     ConnectionResetByPeer,
     BrokenPipe,
+    SocketNotConnected,
 };
 
 pub const MachPortError = KEventError || error{

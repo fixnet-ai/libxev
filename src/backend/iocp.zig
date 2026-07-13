@@ -637,6 +637,7 @@ pub const Loop = struct {
                         .WSAECONNRESET, .WSAENETRESET => .{ .result = .{ .send = error.ConnectionResetByPeer } },
                         .WSAEADDRNOTAVAIL => .{ .result = .{ .send = error.AddressNotAvailable } },
                         .WSAEHOSTDOWN, .WSAEHOSTUNREACH, .WSAENETUNREACH => .{ .result = .{ .send = error.NetworkUnreachable } },
+                        .WSAEFAULT, .WSAEINVAL, .WSAENOTSOCK => .{ .result = .{ .send = error.SocketNotConnected } },
                         else => .{ .result = .{ .send = windows.unexpectedWSAError(err) } },
                     };
                 }
@@ -668,6 +669,7 @@ pub const Loop = struct {
                         .WSAEADDRNOTAVAIL => .{ .result = .{ .recv = error.AddressNotAvailable } },
                         .WSAEHOSTDOWN => .{ .result = .{ .recv = error.NetworkSubsystemFailed } },
                         .WSAEHOSTUNREACH, .WSAENETUNREACH => .{ .result = .{ .recv = error.NetworkUnreachable } },
+                        .WSAEFAULT, .WSAEINVAL, .WSAENOTSOCK => .{ .result = .{ .recv = error.SocketNotConnected } },
                         else => .{ .result = .{ .recv = windows.unexpectedWSAError(err) } },
                     };
                 }
@@ -697,6 +699,7 @@ pub const Loop = struct {
                         .WSAECONNRESET, .WSAENETRESET => .{ .result = .{ .sendto = error.ConnectionResetByPeer } },
                         .WSAEADDRNOTAVAIL => .{ .result = .{ .sendto = error.AddressNotAvailable } },
                         .WSAEHOSTDOWN, .WSAEHOSTUNREACH, .WSAENETUNREACH => .{ .result = .{ .sendto = error.NetworkUnreachable } },
+                        .WSAEFAULT, .WSAEINVAL, .WSAENOTSOCK => .{ .result = .{ .sendto = error.SocketNotConnected } },
                         else => .{ .result = .{ .sendto = windows.unexpectedWSAError(err) } },
                     };
                 }
@@ -728,6 +731,7 @@ pub const Loop = struct {
                         .WSA_OPERATION_ABORTED, .WSAECONNABORTED => .{ .result = .{ .recvfrom = error.Canceled } },
                         .WSAECONNRESET, .WSAENETRESET => .{ .result = .{ .recvfrom = error.ConnectionResetByPeer } },
                         .WSAEADDRNOTAVAIL => .{ .result = .{ .recvfrom = error.AddressNotAvailable } },
+                        .WSAEFAULT, .WSAEINVAL, .WSAENOTSOCK => .{ .result = .{ .recvfrom = error.SocketNotConnected } },
                         .WSAEHOSTDOWN => .{ .result = .{ .recvfrom = error.NetworkSubsystemFailed } },
                         .WSAEHOSTUNREACH, .WSAENETUNREACH => .{ .result = .{ .recvfrom = error.NetworkUnreachable } },
                         else => .{ .result = .{ .recvfrom = windows.unexpectedWSAError(err) } },
@@ -1418,6 +1422,7 @@ pub const WriteError = windows.WriteFileError || error{
     AddressNotAvailable,
     NetworkUnreachable,
     BrokenPipe,
+    SocketNotConnected,
     Unexpected,
 };
 
@@ -1428,6 +1433,7 @@ pub const ReadError = windows.ReadFileError || error{
     AddressNotAvailable,
     NetworkSubsystemFailed,
     NetworkUnreachable,
+    SocketNotConnected,
     Unexpected,
 };
 
