@@ -545,7 +545,7 @@ pub const Loop = struct {
                 break :action .{ .submitted = {} };
             },
 
-            .close => |v| .{ .result = .{ .close = windows.CloseHandle(v.fd) } },
+            .close => |v| .{ .result = .{ .close = rawCloseHandle(v.fd) } },
 
             .connect => |*v| action: {
                 const result = windows.ws2_32.connect(asSocket(v.socket), &v.addr.any, @as(i32, @intCast(v.addr.getOsSockLen())));
@@ -892,6 +892,14 @@ pub const Loop = struct {
 /// Convenience to convert from windows.HANDLE to windows.ws2_32.SOCKET (which are the same thing).
 inline fn asSocket(h: windows.HANDLE) windows.ws2_32.SOCKET {
     return @as(windows.ws2_32.SOCKET, @ptrCast(h));
+}
+
+/// Raw kernel32 CloseHandle that returns BOOL, unlike Zig 0.16.0's wrapper
+/// which calls NtClose and may raise STATUS_INVALID_HANDLE on invalid handles.
+const RawCloseHandle = @extern(*const fn (h: windows.HANDLE) callconv(.winapi) windows.BOOL, .{ .name = "CloseHandle", .library_name = "kernel32" });
+
+fn rawCloseHandle(h: windows.HANDLE) CloseError!void {
+    if (RawCloseHandle(h) == .FALSE) return error.Unexpected;
 }
 
 fn iocpShutdown(sock: windows.ws2_32.SOCKET, how: ShutdownHow) ShutdownError!void {
