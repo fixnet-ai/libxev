@@ -459,7 +459,11 @@ pub const ws2_32 = struct {
 // --- High-level wrapper functions ---
 
 pub fn unexpectedWSAError(err: ws2_32.WinsockError) error{Unexpected} {
-    return unexpectedError(@as(Win32Error, @enumFromInt(@intFromEnum(err))));
+    // Cannot use @enumFromInt to convert WinsockError to Win32Error because
+    // not all Winsock error codes (e.g. WSAETIMEDOUT=10060) exist in the
+    // Win32Error enum in Zig 0.16.0, which would cause "invalid enum value" panic.
+    _ = err;
+    return error.Unexpected;
 }
 
 pub fn QueryPerformanceCounter() u64 {
