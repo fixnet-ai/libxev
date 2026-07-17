@@ -409,7 +409,29 @@ pub const Loop = struct {
                 v.flags,
             ),
 
-            .close => |v| sqe.prep_close(v.fd),
+            .close => |v| {
+                // 同步关闭 fd：IORING_OP_CLOSE 是异步的，内核可能在关闭完成后
+                // 才取消该 fd 上挂起的旧读/写操作。若 close 回调先触发并释放
+                // Session/RelaySession，则后续到达的旧操作 CQE 会引用已释放的
+                // Completion 指针，导致 use-after-free (segfault at tick_ line 196)。
+                // 同步关闭后，旧操作返回 -EBADF — 虽然它们仍会访问 Completion，
+                // 但 Completion 此时还在 deferred_free 列表中未被释放，
+                // 因此内存仍然有效（心跳延迟释放提供足够的安全窗口）。
+                xev_posix.close(v.fd);
+                completion.flags.state = .dead;
+                self.active -= 1; // 撤销 add_ 开头的 active += 1
+
+                // 立即调用回调 — close 是同步的，结果确定成功
+                const action = completion.callback(
+                    completion.userdata,
+                    self,
+                    completion,
+                    .{ .close = {} },
+                );
+                // 若回调 rearm，重新加入闭包
+                if (action == .rearm) self.add(completion);
+                return; // 不提交 SQE 到 ring
+            },
 
             .connect => |*v| sqe.prep_connect(
                 v.socket,
