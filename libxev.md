@@ -71,70 +71,82 @@ fn callback(
 
 ### 核心认知
 
-**kqueue/epoll 的 `close()` 不是同步回调。** 之前观察到的「同步回调」现象，根因是 completion 复用 + 缺少 ThreadPool——旧的 kqueue 事件在 completion 被 close 覆写后仍触发，调用的是 close 回调，造成回调多次执行的错觉。
+**所有 libxev 后端的 `close()` 都是同步的**——`close(fd)` / `rawCloseHandle(fd)` 在 `start_completion()` 中直接调用，不经过异步 SQE/CQE。
 
-真正的机制：
-- kqueue/epoll 的 `close()` 通过 **threadpool 异步执行**（`stream.zig` 设置 `c.flags.threadpool = true`）
-- 无 ThreadPool 时，close 以 EPERM 推入 completions 队列，fd 实际未被关闭，旧 kqueue 事件残留
-- 旧事件触发时调用已被覆写的 completion → close 回调被意外多调 → double free
+关键区别在于**执行线程**：
 
-### 规则一：必须提供 ThreadPool（堆分配！）
+| 后端 | close 执行位置 | 需要 ThreadPool |
+|------|---------------|----------------|
+| kqueue | ThreadPool 工作线程 | **是** |
+| epoll | ThreadPool 工作线程 | **是** |
+| io_uring | 事件循环线程（同步 `close(fd)`） | 否 |
+| IOCP | 事件循环线程（同步 `rawCloseHandle`） | 否 |
 
-```zig
-// ✅ 正确：ThreadPool 必须堆分配——地址必须跨函数返回后仍有效
-const tp = try allocator.create(xev.ThreadPool);
-errdefer allocator.destroy(tp);
-tp.* = xev.ThreadPool.init(.{});
+kqueue/epoll 需要 ThreadPool 的原因：`stream.zig` 在构造 close Completion 时设置 `c.flags.threadpool = true`（第 434-436 行）。因为 `close(fd)` 可能阻塞（SO_LINGER + 发送缓冲区数据），不适合在事件循环线程执行。
 
-var loop = try xev.Loop.init(.{ .thread_pool = tp });
+### 致命场景：ThreadPool 缺失导致静默 fd 泄漏
 
-// deinit 时必须销毁
-pub fn deinit(self: *Self) void {
-    // ...
-    self.loop.deinit();
-    self.thread_pool.shutdown();
-    self.thread_pool.deinit();
-    self.allocator.destroy(self.thread_pool);
-}
+```
+1. zigbox 创建 Loop 时未传 ThreadPool
+2. Session 关闭时调用 TCP.close()
+3. stream.zig 设置 flags.threadpool = true
+4. start_completion() 检测到需要 ThreadPool 但未提供
+5. 返回 error.ThreadPoolRequired
+6. 回调 onCloseComplete 的参数 _: xev.CloseError!void 静默丢弃错误
+7. TCP socket 从未关闭 → fd 泄漏 → 客户端超时
 ```
 
-**绝对不能** `var tp = ThreadPool.init(.{}); loop.init(.{.thread_pool = &tp});` ——栈变量地址函数返回后悬空，Loop 后续所有 threadpool 操作（包括 close）访问已释放内存，fd 永远不会被关闭，直至耗尽。
+**症状**：连接永远不关闭，客户端挂起直到超时。`lsof -p <pid>` 显示 fd 数量持续增长。
 
-ThreadPool 让 close 通过 `thread_perform` → `perform` 正确关闭 fd。fd 关闭后 OS 自动清理相关 kqueue 事件，杜绝残留回调。
+**此问题的唯一正确修复是调用方提供 ThreadPool。**
 
-### 规则二：close 用独立 Completion，不复用读写 completion
+### 规则一：必须提供 ThreadPool
+
+```zig
+// ✅ 正确：创建 ThreadPool 并传入 Loop.init()
+var thread_pool = xev.ThreadPool.init(.{});
+defer thread_pool.deinit();
+defer thread_pool.shutdown();
+
+var loop = try xev.Loop.init(.{ .thread_pool = &thread_pool });
+```
+
+`ThreadPool.init(.{})` 返回配置结构体（零分配），线程延迟创建。Loop 持有指针，只要 ThreadPool 在 Loop 生命周期内有效即可。zigbox `main()` 中栈分配足够，无需堆分配。
+
+IOCP / io_uring 后端的 close 不需要 ThreadPool，但传入也无副作用——未使用时不会启动工作线程。
+
+### 规则二：close 使用独立 Completion
 
 ```zig
 // Session 结构
 client_c: xev.Completion,        // read/write 专用
-client_close_c: xev.Completion,  // close 专用（从未注册到 kqueue）
+client_close_c: xev.Completion,  // close 专用
 remote_c: xev.Completion,
 remote_close_c: xev.Completion,
 
 // shutdown：用 close 专用 completion
 self.client.close(l, &self.client_close_c, Self, self, onCloseComplete);
-if (do_remote) {
-    self.remote.close(l, &self.remote_close_c, Self, self, onCloseComplete);
-}
 
-// onCloseComplete：匹配 close 专用 completion
+// onCloseComplete：通过 c 指针区分哪个 close 完成
 fn onCloseComplete(ud, l, c, ...) {
-    if (c == &self.client_close_c) self.close_pending.client = false;
-    if (c == &self.remote_close_c) self.close_pending.remote = false;
-    if (!self.close_pending.client and !self.close_pending.remote) {
-        self.server.destroySession(self);
-    }
+    if (c == &self.client_close_c) {
+        // client 关闭完成 → 链式关闭 remote（若活跃）
+        if (self.close_pending.remote) {
+            self.remote.close(l, &self.remote_close_c, Self, self, onCloseComplete);
+            return .disarm;
+        }
+    } else if (c == &self.remote_close_c) {
+        // remote 关闭完成
+    } else return .disarm;
+    // 两个都关闭完成 → deferred_free 或 destroy
 }
 ```
 
-不复用的原因：
-- `client_c` 在 kqueue 中注册过读/写事件，旧事件可能在 close 后仍触发
-- 旧事件触发 `clientReadCallback` → 有 `if (self.state == .closing) return .disarm` 状态守卫 → 安全 no-op
-- 如果用 `client_c` 做 close，旧事件触发的是 `onCloseComplete` → 无状态保护 → double free
+不复用读写 completion 的原因：读/写 completion 正在活跃使用中（已提交到事件循环等待 I/O），用同一个 completion 调用 close 会覆写活跃状态，导致读/写回调或 close 回调被错误触发。
 
 ### 规则三：close() 返回后不访问 self
 
-即使有 ThreadPool，close 也可能在同一 tick 内完成（completions 队列处理），导致 `onCloseComplete` 在 `close()` 返回前已调用 `destroySession`。
+close 可能在同一 tick 内通过 completions 队列同步触发回调，`onCloseComplete` 可能在 `close()` 返回前已调用 `destroySession`。
 
 ```zig
 // ✅ 正确：close 决策存到局部变量
@@ -156,130 +168,25 @@ if (do_remote) {
 close_pending: packed struct {
     client: bool = false,
     remote: bool = false,
+    released: bool = false,
 } = .{},
 
 fn shutdown(self: *Self, l: *xev.Loop) void {
     if (self.state == .closing) return;                // 幂等
     if (self.state == .resolving) self.server.dns.cancel(self);  // 取消 DNS
     self.state = .closing;
-    // 释放缓冲区...
-    // 规则二、三：独立 completion + 局部变量
-    const do_remote = self.remote_active;
-    if (do_remote) self.close_pending.remote = true;
+    // 释放缓冲区（先于 close_pending 设置，见下方时序说明）
+    self.close_pending.client = true;
+    if (self.remote_active) self.close_pending.remote = true;
     self.client.close(l, &self.client_close_c, Self, self, onCloseComplete);
-    if (do_remote) self.remote.close(l, &self.remote_close_c, Self, self, onCloseComplete);
 }
 ```
 
-**所有回调**第一行：`if (self.state == .closing) return .disarm;`
+**所有回调**第一行检查关闭状态：`if (self.state == .closing) return .disarm;` 或 `if (self.close_pending.client or self.close_pending.remote) return .disarm;`
 
 **所有错误路径**调用 `shutdown()`，不直接调 `close()`。
 
-**不要用 `close_count` 计数器**——用 `packed struct` 的布尔标志，不可能溢出。
-
-### 规则五：串行化关闭（链式 close，防止 EBADF panic）
-
-**问题**：在 `kevent()` 的同一批次中可能返回多个 fd 的事件。如果在处理第一个事件时同时关闭两个 fd，第二个 fd 的 `perform()`（在同一批次中尚未处理）会在已关闭的 fd 上调用 `recvfrom()`/`send()` → EBADF → `unreachable` panic。
-
-**根因**：`recvfrom`/`send` 收到 EBADF 时 libxev 视为逻辑错误（`unreachable`），但这是合法的并发场景——close 已提交但 kevent 事件在同一批次中尚未处理。
-
-**正确做法：只关一个 fd，在 `onCloseComplete` 中链式关闭下一个**。close 通过 threadpool 异步执行，`onCloseComplete` 在下一 tick 触发，此时当前批次的全部 kevent 事件已处理完毕，第二个 fd 的关闭是安全的。
-
-```zig
-// ✅ 正确：shutdown 只关 client
-fn shutdown(self: *Self, l: *xev.Loop) void {
-    if (self.close_pending.client or self.close_pending.remote) return;
-    // 释放缓冲区...
-    self.close_pending.client = true;
-    if (self.remote_active) self.close_pending.remote = true;
-    self.client.close(l, &self.client_close_c, Self, self, onCloseComplete);
-    // 绝不在此处关闭 remote！
-}
-
-// onCloseComplete：链式关闭 remote
-fn onCloseComplete(ud, l, c, _, _) CallbackAction {
-    const self = ud orelse return .disarm;
-    if (c == &self.client_close_c) {
-        self.close_pending.client = false;
-        if (self.close_pending.remote) {
-            // 安全：当前 kevent 批次已结束，remote fd 上无待处理事件
-            self.remote.close(l, &self.remote_close_c, Self, self, onCloseComplete);
-            return .disarm;
-        }
-    }
-    if (c == &self.remote_close_c) {
-        self.close_pending.remote = false;
-    }
-    if (!self.close_pending.client and !self.close_pending.remote) {
-        self.server.destroySession(self);
-    }
-    return .disarm;
-}
-```
-
-### 规则六：延迟关闭队列（防止 rule 5 未覆盖的 EBADF 竞态）
-
-**规则五只解决了"同一 tick 关闭两个 fd"的竞态，但没有解决"关闭 fd A 时，同一 kevent 批次中还有 fd A 自己的待处理事件"的竞态。**
-
-**问题场景**：
-
-```
-kevent() 返回 [client_read, remote_read(EOF)]
-  → 处理 remote_read: shutdown() → client.close() 提交到 threadpool
-  → threadpool 在另一个线程关闭 client fd（异步 close）
-  → 仍在处理同一批次: client_read → perform() → recvfrom(client_fd)
-  → fd 已被 threadpool 关闭 → EBADF → unreachable panic!
-```
-
-**根因**：close 通过 threadpool 异步执行，可能在当前 kevent 批次的事件全部处理完毕之前就完成了 fd 关闭。而该 fd 在同一批次中仍有待处理事件，`perform()` 直接调用 `recvfrom()`，不经过回调的状态检查。
-
-**正确做法：shutdown() 不立即调用 close()，而是将 session 放入延迟关闭队列，用 0ms timer 推迟到下一 tick 统一关闭。** 下一 tick 时，当前批次的全部 kevent 事件已处理完毕，fd 上无待处理事件，close 安全。
-
-```zig
-// ✅ Server: 延迟关闭队列
-close_queue_relay: ?*RelaySession = null,   // 链表（复用 next 字段）
-close_queue_session: ?*Session = null,
-close_queue_timer: xev.Timer,
-close_queue_c: xev.Completion = .{},
-close_queue_active: bool = false,
-
-// shutdown: 入队替代立即 close
-fn shutdown(self: *RelaySession, l: *xev.Loop) void {
-    if (self.close_pending.client or self.close_pending.remote) return;
-    // 释放缓冲区...
-    self.close_pending.client = true;
-    if (self.remote_active) self.close_pending.remote = true;
-    // 不调 client.close()！入队延迟关闭
-    self.server.enqueueCloseRelay(self, l);
-}
-
-// 入队 + 启动 0ms timer
-fn enqueueCloseRelay(self: *Server, r: *RelaySession, l: *xev.Loop) void {
-    r.next = self.close_queue_relay;
-    self.close_queue_relay = r;
-    if (!self.close_queue_active) {
-        self.close_queue_active = true;
-        self.close_queue_timer.run(l, &self.close_queue_c, 0, Server, self, closeQueueCallback);
-    }
-}
-
-// 下一 tick：所有 kevent 事件已处理完毕，安全关闭
-fn closeQueueCallback(ud: ?*Server, l: *xev.Loop, _: *xev.Completion, result: ...) CallbackAction {
-    const self = ud orelse return .disarm;
-    self.close_queue_active = false;
-    _ = result catch return .disarm;
-    while (self.close_queue_relay) |r| {
-        self.close_queue_relay = r.next;
-        r.next = null;
-        // 安全：当前批次已全部处理完毕
-        r.client.close(l, &r.client_close_c, RelaySession, r, RelaySession.onCloseComplete);
-    }
-    // 同样处理 Session 队列...
-    return .disarm;
-}
-```
-
-**与规则五的关系**：规则五（链式 close）确保 remote fd 不在当前批次中被关闭，规则六（延迟队列）确保 client fd 自身也不在当前批次中被关闭。两者结合才能彻底消除 EBADF 竞态。
+**不要用 `close_count` 计数器**——用 `packed struct` 的布尔标志，不可能溢出。`close_pending` 标志**永远不清除**（IOCP 需要它们作为陈旧完成项的永久防护）。
 
 ### close_pending 与缓冲区释放时序
 
@@ -289,7 +196,6 @@ fn closeQueueCallback(ud: ?*Server, l: *xev.Loop, _: *xev.Completion, result: ..
 fn shutdown(self: *RelaySession, l: *xev.Loop) void {
     if (self.close_pending.client or self.close_pending.remote) return;
     // 1. 先释放缓冲区 — 此时读写回调尚未被 close_pending 阻挡
-    //    如果先设 close_pending，回调中的 release 会被跳过，缓冲区永不归还
     if (self.client_buf) |b| {
         self.server.pool.release(b);
         self.client_buf = null;
@@ -298,19 +204,20 @@ fn shutdown(self: *RelaySession, l: *xev.Loop) void {
         self.server.pool.release(b);
         self.remote_buf = null;
     }
-    // 2. 缓冲区归还后，启动池收缩定时器（池完全空闲时）
     self.server.maybeStartShrinkTimer(l);
-    // 3. 最后设置 close_pending — 此后读/写回调检查 close_pending 返回 .disarm（安全 no-op）
+    // 2. 最后设置 close_pending — 此后读/写回调检查 close_pending 返回 .disarm
     self.close_pending.client = true;
     if (self.remote_active) self.close_pending.remote = true;
-    // 4. 入队延迟关闭
-    self.server.enqueueCloseRelay(self, l);
+    // 3. 直接关闭（仅 client，remote 在 onCloseComplete 中链式关闭）
+    self.client.close(l, &self.client_close_c, RelaySession, self, onCloseComplete);
 }
 ```
 
-**为什么顺序重要**：单线程事件循环保证 `shutdown()` 执行期间不会有并发的读/写回调。缓冲区的 release 和 close_pending 设置之间是原子的（从回调角度看）。如果反过来（先设 close_pending 再释放），缓冲区的引用计数将永远不归还——因为之后的读/写回调会在 `close_pending` 检查时直接返回。
+**为什么顺序重要**：单线程事件循环保证 `shutdown()` 执行期间不会有并发的读/写回调。如果先设 close_pending 再释放，回调中的 release 会被跳过，缓冲区永不归还。
 
-### 规则七：IOCP 延迟释放（deferred free）
+### 规则五：IOCP 延迟释放（deferred free）
+
+**仅适用于 IOCP 后端。** kqueue/epoll/io_uring 不需要此机制——`close(fd)` 后 OS 自动清理该 fd 上的所有待处理事件。
 
 **问题**：IOCP 后端 `tick()` 的处理顺序是**内部完成队列优先于 IOCP 完成队列**：
 
@@ -364,7 +271,15 @@ fn heartbeatCallback(ud, l, c, result) CallbackAction {
 
 **适用范围**：所有在 IOCP 上有持续读/写操作且 close 后可能复用的对象（RelaySession、UdpRelaySession、UotServerSession、Session、TcpRelaySession、TunUdpUotSession）。
 
-**注意**：Session 握手阶段的读/写与 RelaySession 不同，但同样有 IOCP pending I/O。Session 已对齐此模式（2025-07-15 修复）。TUN proxy 模块同样已对齐。
+### onCloseComplete 的 CloseError 静默丢弃
+
+```zig
+fn onCloseComplete(_: xev.TCP, _: xev.CloseError!void) xev.CallbackAction {
+```
+
+参数 `_: xev.CloseError!void` 静默丢弃所有错误，包括 `error.ThreadPoolRequired`。
+
+**安全前提**：调用方必须提供 ThreadPool（规则一）。close 在所有后端都是同步成功或操作系统级失败（极其罕见）。若未配置 ThreadPool（kqueue/epoll），`error.ThreadPoolRequired` 被静默丢弃 → TCP socket 从未关闭 → fd 泄漏 + 客户端超时。不要在回调中添加错误处理来掩盖此配置错误——修复调用方。
 
 ## TCP 操作
 
@@ -466,7 +381,7 @@ const socket = try xev.UDP.init(nameserver);
 ### UDP close
 
 kqueue/epoll 后端：与 TCP close 机制相同，需要 ThreadPool，close 用独立 completion。
-IOCP 后端：同步关闭（`closesocket`），需遵守规则七的 `deferred_free` 模式。
+IOCP 后端：同步关闭（`closesocket`），需遵守规则五的 `deferred_free` 模式。
 
 ### UDP send 失败后 socket 异常（macOS EADDRNOTAVAIL / Linux EHOSTDOWN）
 
@@ -675,16 +590,17 @@ fn timerCallback(ud, l, c, r) {
 
 | 操作 | kqueue (macOS) | epoll (Linux) | io_uring (Linux) | IOCP (Windows) |
 |------|---------------|---------------|------------------|----------------|
-| `TCP.close()` | threadpool 异步，**返回 void** | threadpool 异步，返回 error union | 直接异步 | **同步** (`CloseHandle`/`closesocket`) |
-| `UDP.close()` | threadpool 异步，**返回 void** | threadpool 异步，返回 error union | 直接异步 | **同步** (`CloseHandle`/`closesocket`) |
+| `TCP.close()` | 同步（ThreadPool 线程），**返回 void** | 同步（ThreadPool 线程），返回 error union | 同步（事件循环线程） | **同步** (`CloseHandle`/`closesocket`) |
+| `UDP.close()` | 同步（ThreadPool 线程），**返回 void** | 同步（ThreadPool 线程），返回 error union | 同步（事件循环线程） | **同步** (`CloseHandle`/`closesocket`) |
 | `Timer` | kqueue 定时器（Loop 内部管理） | timerfd（Loop 内部管理） | io_uring timeout | IO Completion 定时器 |
 | `accept` | 异步 | 异步 | 异步 | AcceptEx (IOCP) |
 
 **核心原则：**
-1. kqueue/epoll 必须提供 `ThreadPool`（close 通过 threadpool 异步执行）
-2. IOCP 的 close 是**同步**的——`perform()` 中直接关闭 socket handle。这意味着 close 完成后同一 tick 内仍可能有被取消的 I/O 完成项触发（见规则七）
-3. close 用独立 completion，不复用读写 completion
-4. close() 返回后不访问 self（用局部变量保存决策）
+1. 所有后端的 close 都是**同步**的——`close(fd)` / `rawCloseHandle(fd)` 直接调用，不经过异步 SQE/CQE
+2. kqueue/epoll 必须提供 `ThreadPool`（stream.zig 设置 `flags.threadpool = true`，close 在 ThreadPool 工作线程中执行）
+3. IOCP 的 close 在事件循环线程中同步执行。close 完成后同一 tick 内仍可能有被取消的 I/O 完成项触发（见规则五：IOCP deferred free）
+4. close 用独立 completion，不复用读写 completion
+5. close() 返回后不访问 self（用局部变量保存决策）
 
 ### ⚠️ kqueue 后端 close() 返回 void
 
@@ -825,13 +741,13 @@ fn doStop(self: *Self) void {
 
 ```zig
 // Server 字段
-active_sessions: ?*Session = null,  // createSession 时加入，shutdown/destroy 时移除
-active_relays: ?*RelaySession = null,  // acquireRelay 时加入，shutdown/release 时移除
+active_sessions: ?*Session = null,  // createSession 时加入，shutdown 时移除
+active_relays: ?*RelaySession = null,  // acquireRelay 时加入，shutdown 时移除
 
 fn createSession(self: *Self) !*Session {
     const s = try self.allocator.create(Session);
     // ... 初始化 ...
-    s.close_next = self.active_sessions;
+    s.next = self.active_sessions;
     self.active_sessions = s;
     return s;
 }
@@ -841,52 +757,51 @@ fn destroySession(self: *Self, s: *Session) void {
     self.allocator.destroy(s);
 }
 
-// shutdown 将对象从活跃链表移至关闭队列，防止双重追踪
+// shutdown 将对象从活跃链表移除，直接调用 close()
 fn shutdown(self: *Session, l: *xev.Loop) void {
     // ...
     self.server.removeActiveSession(self);
-    self.server.enqueueCloseSession(self, l);
+    self.client.close(l, &self.client_close_c, Session, self, onCloseComplete);
 }
 
 // deinit 兜底清理所有残留链表
 pub fn deinit(self: *Self) void {
     // ... 正常清理 ...
-    while (self.close_queue_session) |s| { ... }  // 关闭队列
-    while (self.close_queue_relay) |r| { ... }
-    while (self.relay_pool) |r| { ... }           // Relay 池
-    while (self.active_relays) |r| { ... }        // 活跃 Relay（兜底）
-    while (self.active_sessions) |s| { ... }      // 活跃 Session（兜底）
+    while (self.deferred_free_sessions) |s| { ... }  // IOCP 延迟释放队列
+    while (self.deferred_free_relays) |r| { ... }
+    while (self.relay_pool) |r| { ... }              // Relay 池
+    while (self.active_relays) |r| { ... }           // 活跃 Relay（兜底）
+    while (self.active_sessions) |s| { ... }         // 活跃 Session（兜底）
     self.pool.deinit();
 }
 ```
 
-**每个对象在任何时刻仅存在于一个链表中**：活跃链表 → (shutdown) 关闭队列 → (close 完成) destroy → 释放。
+**每个对象在任何时刻仅存在于一个链表中**：活跃链表 → (shutdown) close → deferred_free（IOCP）或直接 destroy（其他后端）。
 
 ## 检查清单
 
 新代码提交前，确认以下事项：
 
-- [ ] `Loop.init` 传入了 `ThreadPool`（kqueue/epoll 必需）
-- [ ] close 使用独立 completion（`client_close_c` / `remote_close_c`），不复用读写 completion
-- [ ] shutdown 中只关一个 fd，onCloseComplete 链式关闭下一个（规则五）
-- [ ] shutdown 不立即 close，通过延迟关闭队列在下一 tick 执行（规则六）
+- [ ] `Loop.init` 传入了 `ThreadPool`（kqueue/epoll 必需，见规则一）
+- [ ] close 使用独立 completion（`client_close_c` / `remote_close_c`），不复用读写 completion（规则二）
 - [ ] shutdown 中**先释放缓冲区，再设置 close_pending**（否则缓冲区永不归还）
-- [ ] close() 返回后不访问 self（决策存局部变量）
-- [ ] 所有回调有 `if (self.state == .closing) return .disarm` 状态守卫
-- [ ] 读/写回调有 `if (self.close_pending.client or self.close_pending.remote) return .disarm`
-- [ ] 所有错误路径通过 `shutdown()` 统一关闭（不直接调 `close()`）
-- [ ] `close_pending` 标志在 `close()` 调用前设置
-- [ ] IOCP: `onCloseComplete` **不清除** `close_pending`，用 `deferred_free` + 心跳释放（规则七）
-- [ ] IOCP: Session 使用独立 `deferred_free_sessions` 链表，对齐 RelaySession 模式
+- [ ] close() 返回后不访问 self（决策存局部变量，规则三）
+- [ ] 所有回调有状态守卫：`if (self.state == .closing) return .disarm;`
+- [ ] 读/写回调有 close_pending 守卫：`if (self.close_pending.client or self.close_pending.remote) return .disarm`
+- [ ] 所有错误路径通过 `shutdown()` 统一关闭，不直接调 `close()`（规则四）
+- [ ] `close_pending` 标志**永远不清除**（IOCP 陈旧完成项永久防护）
+- [ ] IOCP: `onCloseComplete` 用 `deferred_free` + 心跳释放（规则五）
+- [ ] IOCP: 各 Session 类型使用独立 `deferred_free` 链表
+- [ ] `onCloseComplete` 参数 `_: xev.CloseError!void` 静默丢弃错误——调用方必须提供 ThreadPool，否则 `error.ThreadPoolRequired` 被丢弃导致 fd 泄漏
 - [ ] Completion 不在活跃状态时被复用
 - [ ] Timer 不重复 `run()`（有 `timer_active` 守卫）
 - [ ] 无阻塞 syscall（无 `sleep`/`poll`/`getaddrinfo` 等）
 - [ ] 无 `std.Io` 依赖（时间用 `clock_gettime`）
-- [ ] UDP recvCallback 对 `error.AddressNotAvailable`/`error.NetworkSubsystemFailed`/`error.NetworkUnreachable` 走 rebind 路径，不走重试（EADDRNOTAVAIL/EHOSTDOWN/HOSTUNREACH/NETUNREACH）
+- [ ] UDP recvCallback 对 `error.AddressNotAvailable`/`error.NetworkSubsystemFailed`/`error.NetworkUnreachable` 走 rebind 路径，不走重试
 - [ ] 回调中不依赖 `error.Unexpected` 判断网络错误（libxev 已正确映射所有网络 errno）
 - [ ] 栈局部 Completion 仅用于一次性 close 操作（无需持久化时）
 - [ ] kqueue 后端 `close()` 返回 void，不使用 `try` 调用
-- [ ] ThreadPool 堆分配，地址跨 `init()` 返回后仍有效
+- [ ] ThreadPool 在 Loop 生命周期内保持有效（栈分配即可，`init(.{})` 零分配）
 - [ ] 跨平台行为验证：通过 `utm-vm` skill 在三平台 VM (linuxvm/macvm/windowsvm) 上部署并执行功能测试，确认各后端行为一致
 
 ## io_uring 同步关闭修复
@@ -902,8 +817,7 @@ c.flags.state = .dead;  // SEGFAULT — c 指向已释放的 Completion
 之前提交的读/写 SQE 可能尚未被内核取消——它们的 CQE 随后到达时，`cqe.user_data`
 指向已释放的 Completion 结构体。
 
-对比 kqueue：close 是**同步**的（直接 `posix.close(fd)`），且在 close 前通过
-`EV_DELETE` 显式移除内核事件，确保不会再有旧事件触发。
+对比 kqueue/epoll：close 同样是**同步**的（直接 `posix.close(fd)`），fd 关闭后 OS 自动清理该 fd 上的所有内核事件，确保不会再有旧事件触发。
 
 **修复**（`vendor/libxev/src/backend/io_uring.zig`）：将 io_uring 的 close 操作改为同步，
 在 `add_()` 中直接调用 `posix.close(fd)` 并立即触发回调，不再提交 `IORING_OP_CLOSE` SQE。
