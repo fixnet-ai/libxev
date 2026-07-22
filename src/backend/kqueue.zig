@@ -1307,7 +1307,13 @@ pub const Completion = struct {
             .connect => .{
                 .connect = switch (errno) {
                     .SUCCESS => {},
+                    .ISCONN => {},
                     .CANCELED => error.Canceled,
+                    .CONNREFUSED => error.ConnectionRefused,
+                    .TIMEDOUT => error.Timeout,
+                    .NETUNREACH => error.NetworkUnreachable,
+                    .HOSTUNREACH => error.HostUnreachable,
+                    .ADDRNOTAVAIL => error.AddressUnavailable,
                     else => |err| posix.unexpectedErrno(err),
                 },
             },
