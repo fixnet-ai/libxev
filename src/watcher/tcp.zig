@@ -69,6 +69,16 @@ fn TCPStream(comptime xev: type) type {
 
         /// Initialize a TCP socket from a file descriptor.
         pub fn initFd(fd: FdType) Self {
+            // 确保非阻塞 — 外部创建的 socket（如 egress 模块）可能是阻塞的。
+            // kqueue/epoll 后端的 connect() 在提交阶段同步调用 posix.system.connect()，
+            // 若 socket 是阻塞的则会卡死整个事件循环。
+            if (xev.backend == .kqueue or xev.backend == .epoll) {
+                const flags = posix.system.fcntl(fd, posix.F.GETFL, @as(usize, 0));
+                if (flags >= 0) {
+                    const new_flags = @as(u32, @intCast(flags)) | @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
+                    _ = posix.system.fcntl(fd, posix.F.SETFL, new_flags);
+                }
+            }
             return .{
                 .fd = fd,
             };

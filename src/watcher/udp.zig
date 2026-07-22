@@ -71,6 +71,14 @@ fn UDPSendto(comptime xev: type) type {
 
         /// Initialize a UDP socket from a file descriptor.
         pub fn initFd(fd: posix.socket_t) Self {
+            // 确保非阻塞 — 外部创建的 socket 可能是阻塞的。
+            if (xev.backend == .kqueue or xev.backend == .epoll) {
+                const flags = posix.system.fcntl(fd, posix.F.GETFL, @as(usize, 0));
+                if (flags >= 0) {
+                    const new_flags = @as(u32, @intCast(flags)) | @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
+                    _ = posix.system.fcntl(fd, posix.F.SETFL, new_flags);
+                }
+            }
             return .{
                 .fd = fd,
             };
@@ -458,6 +466,14 @@ fn UDPSendMsg(comptime xev: type) type {
 
         /// Initialize a UDP socket from a file descriptor.
         pub fn initFd(fd: posix.socket_t) Self {
+            // 确保非阻塞 — 外部创建的 socket 可能是阻塞的。
+            if (xev.backend == .kqueue or xev.backend == .epoll) {
+                const flags = posix.system.fcntl(fd, posix.F.GETFL, @as(usize, 0));
+                if (flags >= 0) {
+                    const new_flags = @as(u32, @intCast(flags)) | @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
+                    _ = posix.system.fcntl(fd, posix.F.SETFL, new_flags);
+                }
+            }
             return .{
                 .fd = fd,
             };

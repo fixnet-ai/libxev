@@ -513,8 +513,6 @@ pub const Loop = struct {
 
             // Go through the completed events and queue them.
             for (events[0..completed]) |ev| {
-                // Zero udata values are internal events that we do nothing
-                // on such as the mach port wakeup.
                 if (ev.udata == 0) continue;
 
                 // Ignore any successful deletions. This can only happen
