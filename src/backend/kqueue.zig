@@ -165,6 +165,9 @@ pub const Loop = struct {
         // We just add the completion to the queue. Failures can happen
         // at submission or tick time.
         completion.flags.state = .adding;
+        if (completion.op == .connect) {
+            std.log.debug("[kq:add] connect completion fd={}", .{completion.op.connect.socket});
+        }
         self.submissions.push(completion);
     }
 
@@ -182,7 +185,7 @@ pub const Loop = struct {
         var events_len: usize = 0;
 
         // Submit all the submissions. We copy the submission queue so that
-        // any resubmits don't cause an infinite loop.
+        // any subresubmits don't cause an infinite loop.
         var queued = self.submissions;
         self.submissions = .{};
 
@@ -190,7 +193,20 @@ pub const Loop = struct {
         errdefer self.submissions = queued;
 
         while (true) {
+            var submit_count: usize = 0;
+            var connect_count: usize = 0;
+            var connect_skipped: usize = 0;
             queue_pop: while (queued.pop()) |c| {
+                submit_count += 1;
+                if (c.op == .connect) {
+                    connect_count += 1;
+                    if (c.flags.state != .adding) {
+                        connect_skipped += 1;
+                        std.log.debug("[kq:submit] connect fd={} state={s} (not adding, skipped)", .{
+                            c.op.connect.socket, @tagName(c.flags.state),
+                        });
+                    }
+                }
                 switch (c.flags.state) {
                     // If we're adding then we start the event.
                     .adding => if (self.start(c, &events[events_len])) {
@@ -223,6 +239,10 @@ pub const Loop = struct {
                         .{c.flags.state},
                     ),
                 }
+            }
+
+            if (connect_count > 0) {
+                std.log.debug("[kq:submit] processed {d} submissions, {d} connect", .{ submit_count, connect_count });
             }
 
             // If we have no events then we have to have gone through the entire
@@ -527,11 +547,25 @@ pub const Loop = struct {
                 if (ev.flags & std.c.EV.ERROR != 0) {
                     // We cannot use c here because c is already dead
                     // at this point for this event.
+                    const drop_c: *Completion = @ptrFromInt(@as(usize, @intCast(ev.udata)));
+                    if (drop_c.op == .connect) {
+                        std.log.debug("[kq:tick] connect EV_ERROR dropped: fd={} data={}", .{
+                            @as(u64, @intCast(ev.ident)), ev.data,
+                        });
+                    }
                     continue;
                 }
                 wait_rem -|= 1;
 
                 const c: *Completion = @ptrFromInt(@as(usize, @intCast(ev.udata)));
+                if (c.op == .connect) {
+                    std.log.debug("[kq:tick] connect event: fd={} filter={} flags=0x{x} data={}", .{
+                        @as(u64, @intCast(ev.ident)),
+                        @as(i16, @intCast(ev.filter)),
+                        @as(u16, @bitCast(ev.flags)),
+                        ev.data,
+                    });
+                }
 
                 // c is ready to be reused rigt away if we're dearming
                 // so we mark it as dead.
@@ -732,7 +766,9 @@ pub const Loop = struct {
             .connect => |*v| action: {
                 while (true) {
                     const result = posix.system.connect(v.socket, &v.addr.any, v.addr.getOsSockLen());
-                    switch (posix.errno(result)) {
+                    const e = posix.errno(result);
+                    std.log.debug("[kq:connect] fd={} result={} errno={s}", .{ v.socket, result, @tagName(e) });
+                    switch (e) {
                         // Interrupt, try again
                         .INTR => continue,
 
@@ -741,11 +777,15 @@ pub const Loop = struct {
                         // when it is complete.
                         .AGAIN, .INPROGRESS => {
                             ev.* = c.kevent().?;
+                            std.log.debug("[kq:connect] registering EVFILT_WRITE fd={}", .{v.socket});
                             break :action .{ .kevent = {} };
                         },
 
                         // Any other error we report
-                        else => |errno| break :action .{ .result = errno_to_result(errno) },
+                        else => |errno| {
+                            std.log.debug("[kq:connect] immediate error fd={} errno={s}", .{ v.socket, @tagName(errno) });
+                            break :action .{ .result = errno_to_result(errno) };
+                        },
                     }
                 }
             },
