@@ -22,6 +22,7 @@ libxev 是跨平台异步事件循环库。本 fork 在 upstream 基础上增加
 - **EADDRNOTAVAIL / EHOSTDOWN 映射修复**: 在 `kqueue` 后端中映射为 `error.AddressNotAvailable` / `error.HostDown`
 - **io_uring 同步 close 修复**: `close()` 操作改为同步而非异步，避免 lifecycle 竞争
 - **kevent EINTR 无限重试**: `kevent_syscall` 在收到 `EINTR` 时自动重试
+- **IOCP ConnectEx 异步连接**: `connect()` 替换为 `ConnectEx`，对标已有的 `AcceptEx` 模式。标准 `connect()` 在 overlapped socket 上对远程地址返回 `WSAEWOULDBLOCK` 且不投递 IOCP 完成通知，导致所有远程出站连接失败。修改涉及：`windows.zig`（WSAID_CONNECTEX、loadConnectEx）、`iocp.zig` 的 `handle()`/`start_completion`/`perform`/`stop_completion`
 
 ### close() 行为差异
 
