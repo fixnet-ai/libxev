@@ -454,6 +454,66 @@ pub const ws2_32 = struct {
         lpdwBytesReceived: *u32,
         lpOverlapped: *OVERLAPPED,
     ) callconv(.winapi) BOOL;
+
+    // ConnectEx — 微软专有扩展，对标 AcceptEx。
+    // 与 AcceptEx 可通过 extern "mswsock" 直接链接不同，
+    // ConnectEx 必须在运行态通过 WSAIoctl 加载函数指针。
+    pub const SO_UPDATE_CONNECT_CONTEXT: i32 = 0x7009;
+
+    pub const SIO_GET_EXTENSION_FUNCTION_POINTER: u32 = 0xC8000006;
+
+    pub const WSAID_CONNECTEX = win.GUID{
+        .Data1 = 0x25a207b9,
+        .Data2 = 0xddf3,
+        .Data3 = 0x4660,
+        .Data4 = [_]u8{ 0x8e, 0xe9, 0x76, 0xe5, 0x8c, 0x74, 0x06, 0x3e },
+    };
+
+    pub const LPFN_CONNECTEX = *const fn (
+        s: SOCKET,
+        name: *const posix.sockaddr,
+        namelen: i32,
+        lpSendBuffer: ?*anyopaque,
+        dwSendDataLength: u32,
+        lpdwBytesSent: ?*u32,
+        lpOverlapped: ?*OVERLAPPED,
+    ) callconv(.winapi) BOOL;
+
+    pub extern "ws2_32" fn WSAIoctl(
+        s: SOCKET,
+        dwIoControlCode: u32,
+        lpvInBuffer: ?*anyopaque,
+        cbInBuffer: u32,
+        lpvOutBuffer: ?*anyopaque,
+        cbOutBuffer: u32,
+        lpcbBytesReturned: ?*u32,
+        lpOverlapped: ?*OVERLAPPED,
+        lpCompletionRoutine: ?LPWSAOVERLAPPED_COMPLETION_ROUTINE,
+    ) callconv(.winapi) i32;
+
+    /// 通过 WSAIoctl 运行态加载 ConnectEx 函数指针。
+    /// ConnectEx 是微软专有扩展，对远程地址投递 IOCP 完成通知，
+    /// 而标准 connect() 在 overlapped socket 上返回 WSAEWOULDBLOCK
+    /// 且不会投递 IOCP 完成包。
+    pub fn loadConnectEx(s: SOCKET) error{Unexpected}!LPFN_CONNECTEX {
+        var connect_ex: LPFN_CONNECTEX = undefined;
+        var bytes_returned: u32 = 0;
+        const result = WSAIoctl(
+            s,
+            SIO_GET_EXTENSION_FUNCTION_POINTER,
+            @constCast(@ptrCast(&WSAID_CONNECTEX)),
+            @sizeOf(win.GUID),
+            @ptrCast(&connect_ex),
+            @sizeOf(LPFN_CONNECTEX),
+            &bytes_returned,
+            null,
+            null,
+        );
+        if (result != 0) {
+            return unexpectedWSAError(WSAGetLastError());
+        }
+        return connect_ex;
+    }
 };
 
 // --- High-level wrapper functions ---

@@ -548,13 +548,53 @@ pub const Loop = struct {
             .close => |v| .{ .result = .{ .close = rawCloseHandle(v.fd) } },
 
             .connect => |*v| action: {
-                const result = windows.ws2_32.connect(asSocket(v.socket), &v.addr.any, @as(i32, @intCast(v.addr.getOsSockLen())));
-                if (result != 0) {
+                const sock = asSocket(v.socket);
+
+                // ConnectEx 要求 socket 已绑定。绑定到通配地址。
+                const bind_rc = switch (v.addr.any.family) {
+                    posix.AF.INET => blk: {
+                        var a: posix.sockaddr.in = std.mem.zeroes(posix.sockaddr.in);
+                        a.family = posix.AF.INET;
+                        break :blk windows.ws2_32.bind(sock, @ptrCast(&a), @sizeOf(posix.sockaddr.in));
+                    },
+                    posix.AF.INET6 => blk: {
+                        var a: posix.sockaddr.in6 = std.mem.zeroes(posix.sockaddr.in6);
+                        a.family = posix.AF.INET6;
+                        break :blk windows.ws2_32.bind(sock, @ptrCast(&a), @sizeOf(posix.sockaddr.in6));
+                    },
+                    else => break :action .{ .result = .{ .connect = error.Unexpected } },
+                };
+                if (bind_rc != 0) {
+                    break :action .{ .result = .{ .connect = windows.unexpectedWSAError(windows.ws2_32.WSAGetLastError()) } };
+                }
+
+                // 运行态加载 ConnectEx — 对标 AcceptEx 的 extern "mswsock"
+                const connect_ex = windows.ws2_32.loadConnectEx(sock) catch |err| {
+                    break :action .{ .result = .{ .connect = err } };
+                };
+
+                self.associate_fd(completion.handle().?) catch unreachable;
+
+                const result = connect_ex(
+                    sock,
+                    &v.addr.any,
+                    @as(i32, @intCast(v.addr.getOsSockLen())),
+                    null,
+                    0,
+                    null,
+                    &completion.overlapped,
+                );
+                if (result == windows.FALSE) {
                     const err = windows.ws2_32.WSAGetLastError();
                     break :action switch (err) {
+                        .WSA_IO_PENDING => .{ .submitted = {} },
                         else => .{ .result = .{ .connect = windows.unexpectedWSAError(err) } },
                     };
                 }
+
+                // 立即连接成功（如 localhost）— 更新 socket 上下文
+                var dummy: u8 = 0;
+                _ = windows.ws2_32.setsockopt(sock, windows.ws2_32.SOL.SOCKET, windows.ws2_32.SO_UPDATE_CONNECT_CONTEXT, @as([*]const u8, @ptrCast(&dummy)), 0);
                 break :action .{ .result = .{ .connect = {} } };
             },
 
@@ -849,6 +889,15 @@ pub const Loop = struct {
                 }
             },
 
+            .connect => {
+                if (completion.flags.state == .active) {
+                    const result = windows.kernel32.CancelIoEx(asSocket(completion.op.connect.socket), &completion.overlapped);
+                    cancel_result.?.* = if (result == windows.FALSE)
+                        windows.unexpectedError(windows.kernel32.GetLastError())
+                    else {};
+                }
+            },
+
             inline .read, .pread, .write, .pwrite, .recv, .send, .sendto, .recvfrom => |*v| {
                 if (completion.flags.state == .active) {
                     const result = windows.kernel32.CancelIoEx(asSocket(v.fd), &completion.overlapped);
@@ -1013,7 +1062,7 @@ pub const Completion = struct {
     /// Returns a handle for the current operation if it makes sense.
     fn handle(self: Completion) ?windows.HANDLE {
         return switch (self.op) {
-            inline .accept => |*v| v.socket,
+            inline .accept, .connect => |*v| v.socket,
             inline .read, .pread, .write, .pwrite, .recv, .send, .recvfrom, .sendto => |*v| v.fd,
             else => null,
         };
@@ -1023,9 +1072,31 @@ pub const Completion = struct {
     /// operation for the completion.
     pub fn perform(self: *Completion) Result {
         return switch (self.op) {
-            .noop, .close, .connect, .shutdown, .timer, .cancel => {
+            .noop, .close, .shutdown, .timer, .cancel => {
                 std.log.warn("perform op={s}", .{@tagName(self.op)});
                 unreachable;
+            },
+
+            .connect => {
+                const sock = asSocket(self.op.connect.socket);
+                var bytes_transferred: u32 = 0;
+                var flags: u32 = 0;
+                const result = windows.ws2_32.WSAGetOverlappedResult(sock, &self.overlapped, &bytes_transferred, windows.FALSE, &flags);
+
+                if (result != windows.TRUE) {
+                    const err = windows.ws2_32.WSAGetLastError();
+                    return .{
+                        .connect = switch (err) {
+                            .WSA_OPERATION_ABORTED => error.Canceled,
+                            else => windows.unexpectedWSAError(err),
+                        },
+                    };
+                }
+
+                // 连接成功 — 更新 socket 上下文，对标 accept 的 SO_UPDATE_ACCEPT_CONTEXT
+                var dummy: u8 = 0;
+                _ = windows.ws2_32.setsockopt(sock, windows.ws2_32.SOL.SOCKET, windows.ws2_32.SO_UPDATE_CONNECT_CONTEXT, @as([*]const u8, @ptrCast(&dummy)), 0);
+                return .{ .connect = {} };
             },
 
             .accept => |*v| {
