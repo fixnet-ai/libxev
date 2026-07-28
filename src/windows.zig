@@ -522,7 +522,7 @@ pub fn unexpectedWSAError(err: ws2_32.WinsockError) error{Unexpected} {
     // Cannot use @enumFromInt to convert WinsockError to Win32Error because
     // not all Winsock error codes (e.g. WSAETIMEDOUT=10060) exist in the
     // Win32Error enum in Zig 0.16.0, which would cause "invalid enum value" panic.
-    _ = err;
+    std.log.warn("[iocp] unexpected WSA error: err={d}", .{@intFromEnum(err)});
     return error.Unexpected;
 }
 

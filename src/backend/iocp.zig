@@ -1195,6 +1195,9 @@ pub const Completion = struct {
                         .send = switch (err) {
                             .WSA_OPERATION_ABORTED, .WSAECONNABORTED => error.Canceled,
                             .WSAECONNRESET, .WSAENETRESET => error.ConnectionResetByPeer,
+                            .WSAEADDRNOTAVAIL => error.AddressNotAvailable,
+                            .WSAEHOSTDOWN, .WSAEHOSTUNREACH, .WSAENETUNREACH => error.NetworkUnreachable,
+                            .WSAEFAULT, .WSAEINVAL, .WSAENOTSOCK => error.SocketNotConnected,
                             else => windows.unexpectedWSAError(err),
                         },
                     };
@@ -1214,6 +1217,10 @@ pub const Completion = struct {
                         .recv = switch (err) {
                             .WSA_OPERATION_ABORTED, .WSAECONNABORTED => error.Canceled,
                             .WSAECONNRESET, .WSAENETRESET => error.ConnectionResetByPeer,
+                            .WSAEADDRNOTAVAIL => error.AddressNotAvailable,
+                            .WSAEHOSTDOWN => error.NetworkSubsystemFailed,
+                            .WSAEHOSTUNREACH, .WSAENETUNREACH => error.NetworkUnreachable,
+                            .WSAEFAULT, .WSAEINVAL, .WSAENOTSOCK => error.SocketNotConnected,
                             else => windows.unexpectedWSAError(err),
                         },
                     };
@@ -1249,6 +1256,9 @@ pub const Completion = struct {
                         .sendto = switch (err) {
                             .WSA_OPERATION_ABORTED, .WSAECONNABORTED => error.Canceled,
                             .WSAECONNRESET, .WSAENETRESET => error.ConnectionResetByPeer,
+                            .WSAEADDRNOTAVAIL => error.AddressNotAvailable,
+                            .WSAEHOSTDOWN, .WSAEHOSTUNREACH, .WSAENETUNREACH => error.NetworkUnreachable,
+                            .WSAEFAULT, .WSAEINVAL, .WSAENOTSOCK => error.SocketNotConnected,
                             else => windows.unexpectedWSAError(err),
                         },
                     };
@@ -1268,6 +1278,10 @@ pub const Completion = struct {
                         .recvfrom = switch (err) {
                             .WSA_OPERATION_ABORTED, .WSAECONNABORTED => error.Canceled,
                             .WSAECONNRESET, .WSAENETRESET => error.ConnectionResetByPeer,
+                            .WSAEADDRNOTAVAIL => error.AddressNotAvailable,
+                            .WSAEHOSTDOWN => error.NetworkSubsystemFailed,
+                            .WSAEHOSTUNREACH, .WSAENETUNREACH => error.NetworkUnreachable,
+                            .WSAEFAULT, .WSAEINVAL, .WSAENOTSOCK => error.SocketNotConnected,
                             else => windows.unexpectedWSAError(err),
                         },
                     };
