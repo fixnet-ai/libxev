@@ -907,7 +907,13 @@ pub const Loop = struct {
                 }
             },
 
-            else => @panic("Not implemented"),
+            .cancel, .async_wait, .noop, .close, .shutdown, .job_object => {
+                // 这些 ops 没有 IOCP overlapped 操作可取消 — 直接标记为 dead。
+                // 在 loop 关闭期间可能仍有未处理的 cancel/async_wait 等队列型
+                // completion 处于 active 状态，它们没有内核资源需要释放。
+                completion.flags.state = .dead;
+                self.active -= 1;
+            },
         }
     }
 
