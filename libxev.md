@@ -12,6 +12,16 @@ xev.Loop  →  kqueue (macOS) / epoll (Linux) / io_uring (Linux) / IOCP (Windows
 
 本项目使用 libxev 的**静态 API**：所有操作（TCP、UDP、Timer）通过 `xev.Loop` 调度，回调在事件循环线程中同步执行。
 
+### IO 解耦后的类型访问方式
+
+经过 IO 解耦重构后，libxev 类型不再通过直接 `@import("xev")` 访问，而是通过 zigfoundation 的 IO 抽象层统一导出：
+
+```zig
+const xev = @import("zigfoundation").io;  // 常用别名: zf.io
+```
+
+`zigfoundation.io` 封装了 libxev 的类型（`Loop`、`Completion`、`TCP`、`UDP`、`Timer` 等），对外暴露一致的 API。**本文档中所有关于后端行为差异、close 语义、错误处理模式等内容仍然 100% 准确**——只是类型的导入路径发生了变化。示例代码中使用 `xev.` 前缀访问这些类型，实际项目中应替换为上述 import 方式。
+
 ## 核心类型
 
 | 类型 | 用途 |
@@ -24,6 +34,8 @@ xev.Loop  →  kqueue (macOS) / epoll (Linux) / io_uring (Linux) / IOCP (Windows
 | `xev.Timer` | 定时器（run / reset / cancel） |
 
 ## Completion 管理
+
+> **示例代码说明**：以下示例代码使用 `const xev = @import("zigfoundation").io;` 而非直接 `@import("xev")`。IO 解耦后，所有 libxev 类型均通过 zigfoundation 的 io 模块统一导出。
 
 ### 初始化和重用
 

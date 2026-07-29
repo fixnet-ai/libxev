@@ -1,5 +1,16 @@
 # Progress Log
 
+## 2026-07-30: v0.8.3 — libxev.md IO 解耦文档更新 ✅
+
+### 变更
+
+- `libxev.md`：新增"IO 解耦后的类型访问方式"章节，文档化 `@import("zigfoundation").io` 类型别名方式。
+  所有示例代码改用 `const xev = @import("zigfoundation").io;`，后端行为差异描述保持不变。
+
+### 背景
+
+zigbox 全项目 IO 解耦后，libxev 类型通过 zigfoundation 的 io 模块统一导出，不再直接 `@import("xev")`。
+
 ## 2026-07-29 (session 19): libxev.md 同步 ✅
 
 同步自 v0.7.3 以来的 8 个 commit 到 libxev.md：
