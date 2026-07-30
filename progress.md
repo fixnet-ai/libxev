@@ -93,3 +93,8 @@ close() 改为同步操作，避免异步 close 的生命周期竞争问题。
 - **编码前必学规则**：CLAUDE.md 新增"zig skill + zig-codegen.md 学习要求"章节
 - 新建 `.claude/skills/zig` symlink → zigfoundation 的 zig skill
 - Commit: `851eeca` on main
+
+## 2026-07-30 — v0.10.0 CLAUDE.md 统一优化
+
+- **CLAUDE.md 统一优化**：新增"编码规则"章节说明 libxev 处于依赖图最底层、不依赖 zigfoundation
+- Commit: `9476af0` on main
