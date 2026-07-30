@@ -39,6 +39,18 @@ libxev 是跨平台异步事件循环库。本 fork 在 upstream 基础上增加
 - kqueue 后端：在 callback 内部 add 是安全的（callback 在执行时已从 submissions 移除）
 - IOCP 后端：close 后可能有陈旧 completion，需 delayed release 保护（见 zigproxy/libxev.md）
 
+## 编码前必学：zig skill 与 zig-codegen.md
+
+**编写任何 Zig 代码前，必须先学习以下两个资源，避免写出错误代码：**
+
+1. **zig skill** — `.claude/skills/zig/SKILL.md`：Zig 0.16.0 语言模式、标准库用法、编码规范
+2. **zig-codegen.md** — `../zigfoundation/zig-codegen.md`：fixnet 生态积累的编译错误经验与陷阱
+
+**规则：**
+- 编码前通读，目标是**一次性写对**，而非编码后修补
+- 遇到编译错误后，必须更新 zig-codegen.md 并重新学习相关章节
+- 不要凭其他语言经验猜测 Zig 语法，先查这两个资源
+
 ## 构建命令
 
 ```bash
