@@ -51,6 +51,10 @@ libxev 是跨平台异步事件循环库。本 fork 在 upstream 基础上增加
 - 遇到编译错误后，必须更新 zig-codegen.md 并重新学习相关章节
 - 不要凭其他语言经验猜测 Zig 语法，先查这两个资源
 
+## 编码规则
+
+libxev 处于 fixnet 依赖图最底层，不依赖 zigfoundation 或其他 fixnet 项目。编码时只使用 Zig 标准库和 libxev 自身 API。
+
 ## 构建命令
 
 ```bash
