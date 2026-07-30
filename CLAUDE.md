@@ -53,13 +53,6 @@ zig build test               # 运行所有测试
 | ThreadPool (可选) | 文件 I/O 等无异步 API 的操作 |
 
 
-## 编码规则：优先使用 zigfoundation
-
-libxev 是底层事件循环库，但仍应在编写工具函数前检查 zigfoundation 是否已提供。
-
-- 编写涉及网络地址、字节序、平台检测的代码前，先读 `../zigfoundation/API.md`
-- 避免在 libxev 中重复实现 zigfoundation 已有的功能
-
 ## 参考
 
 - Upstream: https://github.com/mitchellh/libxev
