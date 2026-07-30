@@ -1,10 +1,17 @@
 # Progress Log
 
-## 2026-07-31: v0.10.2 — 日志英文规范强制执行 + 规划文档同步 ✅
+## 2026-07-31: v0.10.2 — 日志英文规范 + zig skill 增强 + 软链接统一 ✅
 
 ### 日志规范规则 #6 审计
 - libxev 是底层 C 项目 fork，不参与日志规范审计（无 std.log 使用）
 - 无代码变更
+
+### zig skill SKILL.md 增强
+- zigfoundation 权威源末尾新增「编码前必读：zig-codegen.md」章节，通过软链接自动同步
+
+### 软链接统一
+- 新建 zig-codegen.md 软链接 → zigfoundation 权威源
+- zig skill 软链接确认正常
 
 ### 规划文档同步
 - progress.md / task_plan.md 同步至 v0.10.2
