@@ -76,3 +76,8 @@ close() 改为同步操作，避免异步 close 的生命周期竞争问题。
 
 - 统一版本号对齐 zigbox v0.9.1
 - 本版本无代码变更，仅跟进跨项目统一发布
+
+## v0.9.1 补充 — 撤销 CLAUDE.md 编码规则
+
+- 撤销了错误添加的 zigfoundation 编码规则（libxev 是底层依赖，不应反向依赖 zigfoundation）
+- Commit: `446200f` on main
