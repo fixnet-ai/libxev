@@ -81,3 +81,15 @@ close() 改为同步操作，避免异步 close 的生命周期竞争问题。
 
 - 撤销了错误添加的 zigfoundation 编码规则（libxev 是底层依赖，不应反向依赖 zigfoundation）
 - Commit: `446200f` on main
+
+## 2026-07-30 — v0.9.1 补充 — zig-codegen.md 重组（zigfoundation）
+
+- zigfoundation 的 zig-codegen.md 重组：1794行/19章 → 1166行/12章+1附录
+- 修正 async/await 替代方案描述，合并冗余的校验和/catch 章节
+- Commit: `81f6c58` on zigfoundation main
+
+## 2026-07-30 — v0.9.1 补充 — CLAUDE.md 学习规则
+
+- **编码前必学规则**：CLAUDE.md 新增"zig skill + zig-codegen.md 学习要求"章节
+- 新建 `.claude/skills/zig` symlink → zigfoundation 的 zig skill
+- Commit: `851eeca` on main
