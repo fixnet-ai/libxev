@@ -1,5 +1,9 @@
 # Progress Log
 
+## 2026-08-02: v0.11.0 — 全项目统一版本对齐 ✅
+
+zigfoundation / libxev / zigtun / zigproxy / zigdns / zigbox 统一发布 v0.11.0。
+
 ## 2026-07-31: v0.10.2 — 日志英文规范 + zig skill 增强 + 软链接统一 ✅
 
 ### 日志规范规则 #6 审计
