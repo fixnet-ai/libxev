@@ -168,6 +168,12 @@ pub const Loop = struct {
         if (completion.op == .connect) {
             std.log.debug("[kq:add] connect completion fd={}", .{completion.op.connect.socket});
         }
+        if (completion.op == .recv) {
+            std.log.debug("[kq:add] recv completion fd={}", .{completion.op.recv.fd});
+        }
+        if (completion.op == .read) {
+            std.log.debug("[kq:add] read completion fd={}", .{completion.op.read.fd});
+        }
         self.submissions.push(completion);
     }
 
@@ -560,6 +566,14 @@ pub const Loop = struct {
                 const c: *Completion = @ptrFromInt(@as(usize, @intCast(ev.udata)));
                 if (c.op == .connect) {
                     std.log.debug("[kq:tick] connect event: fd={} filter={} flags=0x{x} data={}", .{
+                        @as(u64, @intCast(ev.ident)),
+                        @as(i16, @intCast(ev.filter)),
+                        @as(u16, @bitCast(ev.flags)),
+                        ev.data,
+                    });
+                }
+                if (c.op == .recv or c.op == .read) {
+                    std.log.debug("[kq:tick] read/recv event: fd={} filter={} flags=0x{x} data={}", .{
                         @as(u64, @intCast(ev.ident)),
                         @as(i16, @intCast(ev.filter)),
                         @as(u16, @bitCast(ev.flags)),

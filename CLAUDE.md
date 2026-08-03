@@ -1,3 +1,21 @@
+# Zig 0.16.0 Development Rules
+
+## Tech Stack & Environment
+- **Language**: Zig 0.16.0 (Strictly enforce 0.16.0 syntax, DO NOT use 0.15.x or older deprecated patterns)
+- **Tooling**: ZLS (Zig Language Server)
+
+## Critical Code Style & Idioms for 0.16.0
+1. **Async & Concurrency**: Zig 0.16.0 has removed the `async`/`await` keywords from the language, but has enhanced async IO through the `std.Io` interface (Future / Completion / event-driven non-blocking IO). Use `std.Io` abstractions; do not spawn raw OS threads unless explicitly required.
+2. **Build System (`build.zig`)**: Always use the 0.16.0 `std.Build` API. Many older build functions have been consolidated or renamed. Never use `b.addBuildTask` or older 0.11-0.13 paradigms.
+3. **Allocator Handling**: Always pass `allocator: std.mem.Allocator` as the first or last parameter to functions requiring allocation. Do not use global state for allocation.
+4. **Error Handling**: Use `try`, `catch`, and `errdefer` for explicit resource tracking immediately after allocation or initialization.
+5. **Memory Safety**: Prefer slices over raw pointers. Ensure `defer` and `errdefer` are used to prevent leaks.
+
+## Verification Workflow
+- BEFORE generating or refactoring any code, ALWAYS use the `zig-docs` MCP tool to query the Zig 0.16.0 standard library definition.
+- DO NOT hallucinate standard library functions. Use `@memcpy` for regular memory copies; `std.mem.copyForwards` / `std.mem.copyBackwards` only for overlapping memory.
+
+
 # CLAUDE.md
 
 > **通用规则（日志规范、Zig 0.16.0、唯一实现源、行为准则、代码编写规范等）**
@@ -54,6 +72,14 @@ libxev 是跨平台异步事件循环库。本 fork 在 upstream 基础上增加
 ## 编码规则
 
 libxev 处于 fixnet 依赖图最底层，不依赖 zigfoundation 或其他 fixnet 项目。编码时只使用 Zig 标准库和 libxev 自身 API。
+
+## 全异步 IO 铁律
+
+**本项目是异步 IO 事件循环库。所有 IO 操作必须异步完成，严禁任何同步阻塞 IO。**
+
+libxev 的存在意义就是提供异步 IO。任何在 libxev 中使用同步阻塞 IO 的代码都是根本性设计错误。
+
+**例外：** 测试/工具脚本（Python）是唯一允许使用同步 IO 的场景。
 
 ## 构建命令
 

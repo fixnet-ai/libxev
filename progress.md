@@ -1,5 +1,12 @@
 # Progress Log
 
+## 2026-08-04: v0.13.2 — 全项目统一版本发布 ✅
+
+- `CLAUDE.md` — 新增 Zig 0.16.0 开发规则 + 全异步 IO 铁律
+- `kqueue.zig` — 新增 recv/read 调试日志
+- `.claude/skills/zig-async-skill/` — 新增 Zig 异步编码 skill
+- zigfoundation / libxev / zigtun / zigproxy / zigdns / zigoutbounds / zigbox 统一发布 v0.13.2。
+
 ## 2026-08-02: v0.11.0 — 全项目统一版本对齐 ✅
 
 zigfoundation / libxev / zigtun / zigproxy / zigdns / zigbox 统一发布 v0.11.0。
