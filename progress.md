@@ -1,5 +1,10 @@
 # Progress Log
 
+## 2026-08-04: v0.13.3 — 轻量协议搬迁 + 全项目统一版本发布 ✅
+
+核心变更：zigoutbounds/zigbox 轻量协议物理搬迁（7 文件移至 zigoutbounds/src/light/）。
+libxev 无代码变更，参与版本同步。
+
 ## 2026-08-04: v0.13.2 — 全项目统一版本发布 ✅
 
 - `CLAUDE.md` — 新增 Zig 0.16.0 开发规则 + 全异步 IO 铁律
