@@ -1,5 +1,10 @@
 # Progress Log
 
+## 2026-08-05: v0.16.0 — 全项目统一版本发布 ✅
+
+zigfoundation / libxev / zigtun / zigproxy / zigdns / zigoutbounds / zigbox 统一发布 v0.16.0。
+libxev 无代码变更，参与版本同步。
+
 ## 2026-08-04: v0.13.3 — 轻量协议搬迁 + 全项目统一版本发布 ✅
 
 核心变更：zigoutbounds/zigbox 轻量协议物理搬迁（7 文件移至 zigoutbounds/src/light/）。
