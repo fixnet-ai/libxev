@@ -18,8 +18,11 @@
 
 # CLAUDE.md
 
-> **通用规则（日志规范、Zig 0.16.0、唯一实现源、行为准则、代码编写规范等）**
+> **通用规则（日志规范、Zig 0.16.0、唯一实现源、行为准则、代码编写规范、调试铁律等）**
 > 已在用户级 `~/.claude/CLAUDE.md` 中统一定义，本项目不再重复。
+>
+> **⚠️ `error.Unexpected` 致命错误**：开发测试阶段，`error.Unexpected`（或语义等价的意外状态错误）必须视为致命错误立即 panic，严禁静默吞掉。完整规则见用户级 CLAUDE.md § 调试铁律 #5。
+>
 > 本文件仅包含 libxev 项目特有信息（本 repo 是 mitchellh/libxev 的 fixnet fork）。
 
 ## 项目概述
