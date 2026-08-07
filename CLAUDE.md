@@ -1,21 +1,3 @@
-# Zig 0.16.0 Development Rules
-
-## Tech Stack & Environment
-- **Language**: Zig 0.16.0 (Strictly enforce 0.16.0 syntax, DO NOT use 0.15.x or older deprecated patterns)
-- **Tooling**: ZLS (Zig Language Server)
-
-## Critical Code Style & Idioms for 0.16.0
-1. **Async & Concurrency**: Zig 0.16.0 has removed the `async`/`await` keywords from the language, but has enhanced async IO through the `std.Io` interface (Future / Completion / event-driven non-blocking IO). Use `std.Io` abstractions; do not spawn raw OS threads unless explicitly required.
-2. **Build System (`build.zig`)**: Always use the 0.16.0 `std.Build` API. Many older build functions have been consolidated or renamed. Never use `b.addBuildTask` or older 0.11-0.13 paradigms.
-3. **Allocator Handling**: Always pass `allocator: std.mem.Allocator` as the first or last parameter to functions requiring allocation. Do not use global state for allocation.
-4. **Error Handling**: Use `try`, `catch`, and `errdefer` for explicit resource tracking immediately after allocation or initialization.
-5. **Memory Safety**: Prefer slices over raw pointers. Ensure `defer` and `errdefer` are used to prevent leaks.
-
-## Verification Workflow
-- BEFORE generating or refactoring any code, ALWAYS use the `zig-docs` MCP tool to query the Zig 0.16.0 standard library definition.
-- DO NOT hallucinate standard library functions. Use `@memcpy` for regular memory copies; `std.mem.copyForwards` / `std.mem.copyBackwards` only for overlapping memory.
-
-
 # CLAUDE.md
 
 > **通用规则（日志规范、Zig 0.16.0、唯一实现源、行为准则、代码编写规范、调试铁律等）**

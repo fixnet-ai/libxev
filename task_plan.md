@@ -6,28 +6,11 @@
 
 ## 当前版本
 
-v0.16.0 (2026-08-05) — 全项目统一版本发布，libxev 无代码变更，参与版本同步。
-v0.13.2 (2026-08-04) — 全项目统一版本发布。CLAUDE.md 开发规则 + kqueue 调试日志。
-v0.11.0 (2026-08-02) — 全项目统一版本对齐。
-v0.10.2 (2026-07-31) — 日志英文规范规则 #6（不适用，底层 C fork）+ 规划文档同步。
-v0.10.0 (2026-07-30) — CLAUDE.md 统一优化。
-v0.8.5 (2026-07-30) — 跨项目统一发布，无代码变更，tag 对齐 zigbox WFP DNS 劫持修复。
+v0.16.0 (2026-08-05) — 全项目统一版本发布。详细版本历史见 git tag。
 
 ## 已完成工作
 
-| 类别 | 内容 | 关键 commit |
-|------|------|------------|
-| kqueue connect 修复 | EADDRNOTAVAIL/EHOSTDOWN 映射、EISCONN (errno 56) 未映射修复 | `7345361`, `b6aa7a7` |
-| kqueue Timer | 时钟更新修复 — kevent 返回后更新时间戳 | `7e7d2f2` |
-| io_uring close | close() 改为同步操作，避免生命周期竞争 | — |
-| io_uring UDP | 不设 SOCK_NONBLOCK（设计选择） | — |
-| IOCP ConnectEx | 异步连接替代同步 connect()，对标 AcceptEx 模式 | `b10ccf7`, `8132f5b` |
-| IOCP stop_completion | 非 IOCP 操作 panic 修复 | `1a1eb49` |
-| IOCP WSA 错误映射 | send/recv/sendto/recvfrom 完成阶段 12 种 WSA 错误码补全 | `ec2c332` |
-| IOCP CloseHandle | STATUS_INVALID_HANDLE 修复 | `997f328` |
-| TCP/UDP initFd | NONBLOCK 标志设置，防止阻塞事件循环 | `a3b02c2` |
-| EINTR 处理 | kevent_syscall EINTR 自动重试 | — |
-| 文档 | libxev.md 综合使用指南（1037 行） | `ea829d9` |
+kqueue connect 修复（EADDRNOTAVAIL/EHOSTDOWN/EISCONN）、Timer 时钟更新、io_uring 同步 close、IOCP ConnectEx/WSA 错误映射/CloseHandle/stop_completion、TCP/UDP NONBLOCK initFd、EINTR 重试。详见 git history。
 
 ## 待完成工作
 
@@ -43,25 +26,15 @@ v0.8.5 (2026-07-30) — 跨项目统一发布，无代码变更，tag 对齐 zig
 ```
 libxev/
 ├── src/
-│   ├── libxev.zig         # 主入口，后端选择
+│   ├── main.zig           # 入口
+│   ├── api.zig            # pub API
 │   ├── backend/
 │   │   ├── kqueue.zig     # macOS
 │   │   ├── epoll.zig      # Linux (epoll)
 │   │   ├── io_uring.zig   # Linux (io_uring)
-│   │   └── iocp.zig       # Windows
-│   ├── watcher/            # 事件监视器
-│   │   ├── tcp.zig
-│   │   ├── udp.zig
-│   │   ├── timer.zig
-│   │   └── ...
-│   └── windows.zig         # Windows 平台特定
-└── libxev.md               # 综合使用指南
+│   │   ├── iocp.zig       # Windows
+│   │   └── wasi_poll.zig  # WASI
+│   ├── watcher/           # 事件监视器（async/file/process/stream/tcp/timer/udp）
+│   └── windows.zig        # Windows 平台特定
+└── libxev.md              # 综合使用指南
 ```
-
-## 版本历史
-
-| 版本 | 日期 | 变更 |
-|------|------|------|
-| v0.7.4 | 2026-07-29 | 跨项目统一发布 (tag 对齐) |
-| v0.7.3 | 2026-07-29 | libxev.md 文档同步 |
-| v0.6.0 | 2026-07-25 | 跨项目统一发布 |
