@@ -26,3 +26,8 @@ IOCP ConnectEx/WSA 错误映射/CloseHandle/stop_completion、TCP/UDP NONBLOCK i
 - libxev 处于 fixnet 依赖图最底层，不依赖 zigfoundation
 
 > 详细实现过程见 git history。跨后端踩坑记录见 `findings.md`。
+
+## 2026-08-19: io_uring 零长度探词 → POLL_ADD（fork 维护）
+
+- backend/io_uring.zig：0-len recv/send 提交翻译为单次 POLL_ADD(POLLIN/OUT)，完成时合成 res=0——对齐 kqueue「可读即完成」语义（上层非阻塞 TLS 握手 WANT_READ/WANT_WRITE 探针）。commit a9a3516
+- 背景：zigbox Linux VM 回归 trojan TLS 竞态挂死调查（主修在 zo tls.zig 的 fd 非阻塞，本修复为探词语义正确性保留）。详见 zigbox findings「VM 回归固化 + #61 真凶修正」
