@@ -482,11 +482,20 @@ pub const Loop = struct {
                     0,
                 ),
 
-                .slice => |buf| sqe.prep_recv(
-                    v.fd,
-                    buf,
-                    0,
-                ),
+                // 零长度 slice 是「就绪探针」（上层非阻塞 TLS 握手 WANT_READ 用，
+                // 不消费数据——bssl fd-BIO 自行 recv）：io_uring 的 0 长 recv
+                // 不会因数据到达而完成，探针永久停驻（2026-08-19 linuxvm 实测
+                // trojan TLS 竞态挂死根因）。翻译为单次 POLL_ADD(POLLIN)，
+                // invoke 时合成 res=0，对齐 kqueue「可读即完成」语义。
+                // WANT_WRITE 空写探针同治（见 .send）。
+                .slice => |buf| if (buf.len == 0)
+                    sqe.prep_poll_add(v.fd, linux.POLL.IN)
+                else
+                    sqe.prep_recv(
+                        v.fd,
+                        buf,
+                        0,
+                    ),
             },
 
             .recvmsg => |*v| {
@@ -504,11 +513,15 @@ pub const Loop = struct {
                     0,
                 ),
 
-                .slice => |buf| sqe.prep_send(
-                    v.fd,
-                    buf,
-                    0,
-                ),
+                // 零长度 slice = 可写就绪探针（同 .recv 的 POLL_ADD 翻译）
+                .slice => |buf| if (buf.len == 0)
+                    sqe.prep_poll_add(v.fd, linux.POLL.OUT)
+                else
+                    sqe.prep_send(
+                        v.fd,
+                        buf,
+                        0,
+                    ),
             },
 
             .sendmsg => |*v| {
@@ -726,16 +739,24 @@ pub const Completion = struct {
                 .pread = self.readResult(.pread, res),
             },
 
-            .recv => .{
-                .recv = self.readResult(.recv, res),
+            .recv => |*v| .{
+                // 零长度探针经 POLL_ADD 完成：res 是事件掩码（>0），合成 0
+                // （「可读，未读任何字节」），不进 readResult 的 errno 解析
+                .recv = if (res >= 0 and v.buffer == .slice and v.buffer.slice.len == 0)
+                    0
+                else
+                    self.readResult(.recv, res),
             },
 
             .recvmsg => .{
                 .recvmsg = self.readResult(.recvmsg, res),
             },
 
-            .send => .{
-                .send = if (res >= 0)
+            .send => |*v| .{
+                .send = if (res >= 0 and v.buffer == .slice and v.buffer.slice.len == 0)
+                    // 零长度探针经 POLL_ADD 完成（res = 事件掩码）：合成 0
+                    0
+                else if (res >= 0)
                     @intCast(res)
                 else switch (@as(posix.E, @enumFromInt(-res))) {
                     .CANCELED => error.Canceled,
