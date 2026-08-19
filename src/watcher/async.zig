@@ -595,7 +595,13 @@ fn AsyncIOCP(comptime xev: type) type {
                 .c = c,
             };
 
-            if (self.wakeup) loop.async_notify(c);
+            // sticky 消费：置位后必须清除，否则每次 wait 都自我补发 PQCS
+            // → async 触发 → 重挂 → 再补发的永久自触发循环（#65：worker
+            // 100% 自旋 + 内核完成包在 IOCP 队列永不取出 → 非分页池耗尽）。
+            if (self.wakeup) {
+                self.wakeup = false;
+                loop.async_notify(c);
+            }
         }
 
         pub fn notify(self: *Self) !void {
@@ -603,10 +609,14 @@ fn AsyncIOCP(comptime xev: type) type {
             self.guard.lockUncancelable(io);
             defer self.guard.unlock(io);
 
+            // 无条件置 sticky：waiter 非空不代表 completion 已挂载 —— loop 在
+            // 「消费 wakeup 标志（asyncs 扫描 swap）→ 回调重挂 wait()」窗口内
+            // 时，waiter 仍指向未挂载的 completion，对它置标志会被 wait() 的
+            // c.* 复位抹掉（丢失唤醒）。sticky 由 wait() 消费补发兜底。
+            // 双触发无害：回调幂等（排空式处理）。
+            self.wakeup = true;
             if (self.waiter) |w| {
                 w.loop.async_notify(w.c);
-            } else {
-                self.wakeup = true;
             }
         }
 
