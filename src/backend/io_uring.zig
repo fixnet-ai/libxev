@@ -131,7 +131,7 @@ pub const Loop = struct {
     pub fn update_now(self: *Loop) void {
         var ts: linux.timespec = undefined;
         const rc = linux.clock_gettime(linux.CLOCK.MONOTONIC, &ts);
-        if (posix.errno(rc) == .SUCCESS) {
+        if (linux.errno(rc) == .SUCCESS) {
             self.cached_now = ts;
             self.flags.now_outdated = false;
         }

@@ -43,7 +43,7 @@ fn ProcessPidFd(comptime xev: type) type {
             // Note: SOCK_NONBLOCK == PIDFD_NONBLOCK but we should PR that
             // over to Zig.
             const res = linux.pidfd_open(pid, posix.SOCK.NONBLOCK);
-            const fd = switch (posix.errno(res)) {
+            const fd = switch (linux.errno(res)) {
                 .SUCCESS => @as(posix.fd_t, @intCast(res)),
                 .INVAL => return error.InvalidArgument,
                 .MFILE => return error.ProcessFdQuotaExceeded,
@@ -109,7 +109,7 @@ fn ProcessPidFd(comptime xev: type) type {
                             var info: linux.siginfo_t = undefined;
                             const res = linux.waitid(.PIDFD, fd, &info, linux.W.EXITED, null);
 
-                            break :arg switch (posix.errno(res)) {
+                            break :arg switch (linux.errno(res)) {
                                 .SUCCESS => @as(u32, @intCast(info.fields.common.second.sigchld.status)),
                                 .CHILD => error.InvalidChild,
 

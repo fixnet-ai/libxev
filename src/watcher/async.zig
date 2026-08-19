@@ -60,7 +60,11 @@ fn AsyncEventFd(comptime xev: type) type {
                     // Use the raw linux syscall.
                     else => blk: {
                         const rc = std.os.linux.eventfd(0, std.os.linux.EFD.CLOEXEC | std.os.linux.EFD.NONBLOCK);
-                        break :blk switch (std.posix.errno(rc)) {
+                        // 注意：必须用 std.os.linux.errno（从返回值推断 -errno），
+                        // 而非 std.posix.errno（use_libc 下 = std.c.errno，只认 rc==-1）。
+                        // eventfd 是直接 syscall，失败返回 -errno（如 -24 EMFILE），
+                        // std.c.errno 误判 SUCCESS → @intCast 溢出 panic（#70 根因）。
+                        break :blk switch (std.os.linux.errno(rc)) {
                             .SUCCESS => @as(std.posix.fd_t, @intCast(rc)),
                             else => |err| return std.posix.unexpectedErrno(err),
                         };
