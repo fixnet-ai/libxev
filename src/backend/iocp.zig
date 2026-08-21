@@ -593,8 +593,7 @@ pub const Loop = struct {
                 }
 
                 // 立即连接成功（如 localhost）— 更新 socket 上下文
-                var dummy: u8 = 0;
-                _ = windows.ws2_32.setsockopt(sock, windows.ws2_32.SOL.SOCKET, windows.ws2_32.SO_UPDATE_CONNECT_CONTEXT, @as([*]const u8, @ptrCast(&dummy)), 0);
+                _ = windows.ws2_32.setsockopt(sock, windows.ws2_32.SOL.SOCKET, windows.ws2_32.SO_UPDATE_CONNECT_CONTEXT, null, 0);
                 break :action .{ .result = .{ .connect = {} } };
             },
 
@@ -1103,9 +1102,8 @@ pub const Completion = struct {
                     };
                 }
 
-                // 连接成功 — 更新 socket 上下文，对标 accept 的 SO_UPDATE_ACCEPT_CONTEXT
-                var dummy: u8 = 0;
-                _ = windows.ws2_32.setsockopt(sock, windows.ws2_32.SOL.SOCKET, windows.ws2_32.SO_UPDATE_CONNECT_CONTEXT, @as([*]const u8, @ptrCast(&dummy)), 0);
+                // 连接成功 — 更新 socket 上下文（ConnectEx 不自动继承，否则 shutdown 报 WSAENOTCONN）
+                _ = windows.ws2_32.setsockopt(sock, windows.ws2_32.SOL.SOCKET, windows.ws2_32.SO_UPDATE_CONNECT_CONTEXT, null, 0);
                 return .{ .connect = {} };
             },
 
@@ -1126,6 +1124,17 @@ pub const Completion = struct {
                     return r;
                 }
 
+                // AcceptEx 不会像 accept() 那样自动继承 listening socket 上下文。
+                // 必须显式设置 SO_UPDATE_ACCEPT_CONTEXT（optval = listening socket 句柄），
+                // 否则 accepted socket 上的 shutdown/getsockname 等操作会失败（WSAENOTCONN）。
+                const listen_sock = asSocket(v.socket);
+                _ = windows.ws2_32.setsockopt(
+                    asSocket(v.internal_accept_socket.?),
+                    windows.ws2_32.SOL.SOCKET,
+                    windows.ws2_32.SO_UPDATE_ACCEPT_CONTEXT,
+                    @as([*]const u8, @ptrCast(&listen_sock)),
+                    @sizeOf(windows.ws2_32.SOCKET),
+                );
                 return .{ .accept = self.op.accept.internal_accept_socket.? };
             },
 

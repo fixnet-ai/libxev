@@ -441,7 +441,7 @@ pub const ws2_32 = struct {
         s: SOCKET,
         level: i32,
         optname: i32,
-        optval: [*]const u8,
+        optval: ?[*]const u8,
         optlen: i32,
     ) callconv(.winapi) i32;
 
@@ -459,7 +459,8 @@ pub const ws2_32 = struct {
     // ConnectEx — 微软专有扩展，对标 AcceptEx。
     // 与 AcceptEx 可通过 extern "mswsock" 直接链接不同，
     // ConnectEx 必须在运行态通过 WSAIoctl 加载函数指针。
-    pub const SO_UPDATE_CONNECT_CONTEXT: i32 = 0x7009;
+    pub const SO_UPDATE_CONNECT_CONTEXT: i32 = 0x7010;
+    pub const SO_UPDATE_ACCEPT_CONTEXT: i32 = 0x700B;
 
     pub const SIO_GET_EXTENSION_FUNCTION_POINTER: u32 = 0xC8000006;
 
