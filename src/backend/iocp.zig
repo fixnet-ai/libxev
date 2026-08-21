@@ -925,7 +925,11 @@ pub const Loop = struct {
 
         // The completion has been wakeup, this is used to see which completion in the async queue
         // needs to be removed.
-        completion.op.async_wait.wakeup.store(true, .seq_cst);
+        // #66 ①：仅 false→true 首次翻转才发空完成包，消除冗余 PQCS（每次 notify = 一次
+        // 内核完成包分配）。wakeup 已为 true 意味着已有 pending PQCS 会唤醒 loop 并消费
+        // 该 async，跳过本次补发即可；与 Process asyncs 的 swap(false) 消费严格配对，
+        // 最坏情况是多一次 spurious wakeup，无害，不丢唤醒。
+        if (completion.op.async_wait.wakeup.swap(true, .seq_cst)) return;
 
         // NOTE: This call can fail but errors are not documented, so we log the error here.
         windows.PostQueuedCompletionStatus(self.iocp_handle, 0, 0, null) catch |err| {
