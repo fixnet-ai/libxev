@@ -324,6 +324,7 @@ pub const ws2_32 = struct {
     pub const SOL = win.ws2_32.SOL;
     pub const SO = win.ws2_32.SO;
     pub const IPPROTO = win.ws2_32.IPPROTO;
+    pub const TCP = win.ws2_32.TCP;
     pub const SD_RECEIVE: i32 = 0;
     pub const SD_SEND: i32 = 1;
     pub const SD_BOTH: i32 = 2;
