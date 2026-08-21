@@ -9,6 +9,11 @@ const net = @import("../posix.zig").net;
 const xev_posix = @import("../posix.zig");
 const windows = @import("../windows.zig");
 
+// TCP_NODELAY socket 选项常量 — 全 POSIX/Windows 平台同值（IPPROTO_TCP=6, TCP_NODELAY=1）。
+// 不依赖 std.posix.TCP（darwin 无该定义），见 setNoDelay 的 Nagle 死锁修复注释。
+const IPPROTO_TCP: i32 = 6;
+const TCP_NODELAY: u32 = 1;
+
 /// TCP client and server.
 ///
 /// This is a "higher-level abstraction" in libxev. The goal of higher-level
@@ -84,6 +89,32 @@ fn TCPStream(comptime xev: type) type {
             };
         }
 
+        /// TCP_NODELAY（禁 Nagle）— accept/connect 回调的 per-connection 设置点。
+        /// 修复 macOS delayed-ACK(100ms) × Nagle 死锁：「握手后多段小写 + 对端沉默」
+        /// 的请求（trojan/vless/reality）每连接卡 ~100ms（zigoutbounds findings §35 追加-7）。
+        ///
+        /// 必须用 system.setsockopt（原始 errno 返回）而非 posix.setsockopt——
+        /// 后者把 INVAL/BADF/NOTSOCK 映射为 unreachable panic（std/posix.zig 注释
+        /// 「always a race condition」），fd 生命周期竞态下会崩线程（findings §35
+        /// 追加-7 实证：recv 完成回调路径 EINVAL panic 导致整线程死亡、800/800 全超时）。
+        /// 失败静默忽略（best-effort）：选项设置失败不影响连接可用性。
+        ///
+        /// 不得放进 initFd：initFd 在 read/recv 完成回调每次调用，热路径每包
+        /// 一个 setsockopt syscall 是性能税，且 recv 回调的 fd 存在 close-复用竞态窗口。
+        fn setNoDelay(fd: FdType) void {
+            switch (xev.backend) {
+                .iocp => {
+                    const sock = @as(windows.ws2_32.SOCKET, @ptrCast(fd));
+                    _ = windows.ws2_32.setsockopt(sock, windows.ws2_32.IPPROTO.TCP, windows.ws2_32.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)), @sizeOf(c_int));
+                },
+                .io_uring, .epoll, .kqueue => {
+                    const optval: [4]u8 = std.mem.toBytes(@as(c_int, 1));
+                    _ = posix.system.setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, @ptrCast(&optval), @sizeOf(c_int));
+                },
+                .wasi_poll => {},
+            }
+        }
+
         /// Bind the address to the socket.
         pub fn bind(self: Self, addr: std.Io.net.IpAddress) !void {
             if (xev.backend == .wasi_poll) @compileError("unsupported in WASI");
@@ -146,7 +177,11 @@ fn TCPStream(comptime xev: type) type {
                             common.userdataValue(Userdata, ud),
                             l_inner,
                             c_inner,
-                            if (r.accept) |fd| initFd(fd) else |err| err,
+                            if (r.accept) |fd| blk: {
+                                const s = initFd(fd);
+                                setNoDelay(fd);
+                                break :blk s;
+                            } else |err| err,
                         });
                     }
                 }).callback,
@@ -201,11 +236,15 @@ fn TCPStream(comptime xev: type) type {
                         c_inner: *xev.Completion,
                         r: xev.Result,
                     ) xev.CallbackAction {
+                        const sock = initFd(c_inner.op.connect.socket);
+                        // 连接建立即禁 Nagle（per-connection 一次）；连接失败时 socket
+                        // 可能已被 backend 关闭，setNoDelay 静默忽略（best-effort）。
+                        setNoDelay(c_inner.op.connect.socket);
                         return @call(.always_inline, cb, .{
                             common.userdataValue(Userdata, ud),
                             l_inner,
                             c_inner,
-                            initFd(c_inner.op.connect.socket),
+                            sock,
                             if (r.connect) |_| {} else |err| err,
                         });
                     }
