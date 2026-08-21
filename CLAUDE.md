@@ -1,11 +1,6 @@
 # CLAUDE.md
 
-> **通用规则（日志规范、Zig 0.16.0、唯一实现源、行为准则、代码编写规范、调试铁律等）**
-> 已在用户级 `~/.claude/CLAUDE.md` 中统一定义，本项目不再重复。
->
-> **⚠️ `error.Unexpected` 致命错误**：开发测试阶段，`error.Unexpected`（或语义等价的意外状态错误）必须视为致命错误立即 panic，严禁静默吞掉。完整规则见用户级 CLAUDE.md § 调试铁律 #5。
->
-> 本文件仅包含 libxev 项目特有信息（本 repo 是 mitchellh/libxev 的 fixnet fork）。
+> 通用规则见用户级 `~/.claude/CLAUDE.md`；本文件仅含 libxev 项目特有信息（本 repo 是 mitchellh/libxev 的 fixnet fork）。
 
 ## 项目概述
 
@@ -42,29 +37,9 @@ libxev 是跨平台异步事件循环库。本 fork 在 upstream 基础上增加
 - kqueue 后端：在 callback 内部 add 是安全的（callback 在执行时已从 submissions 移除）
 - IOCP 后端：close 后可能有陈旧 completion，需 delayed release 保护（见 zigproxy/libxev.md）
 
-## 编码前必学：zig skill 与 zig-codegen.md
-
-**编写任何 Zig 代码前，必须先学习以下两个资源，避免写出错误代码：**
-
-1. **zig skill** — `.claude/skills/zig/SKILL.md`：Zig 0.16.0 语言模式、标准库用法、编码规范
-2. **zig-codegen.md** — `../zigfoundation/zig-codegen.md`：fixnet 生态积累的编译错误经验与陷阱
-
-**规则：**
-- 编码前通读，目标是**一次性写对**，而非编码后修补
-- 遇到编译错误后，必须更新 zig-codegen.md 并重新学习相关章节
-- 不要凭其他语言经验猜测 Zig 语法，先查这两个资源
-
 ## 编码规则
 
-libxev 处于 fixnet 依赖图最底层，不依赖 zigfoundation 或其他 fixnet 项目。编码时只使用 Zig 标准库和 libxev 自身 API。
-
-## 全异步 IO 铁律
-
-**本项目是异步 IO 事件循环库。所有 IO 操作必须异步完成，严禁任何同步阻塞 IO。**
-
-libxev 的存在意义就是提供异步 IO。任何在 libxev 中使用同步阻塞 IO 的代码都是根本性设计错误。
-
-**例外：** 测试/工具脚本（Python）是唯一允许使用同步 IO 的场景。
+libxev 处于 fixnet 依赖图最底层，不依赖 zigfoundation 或其他 fixnet 项目。编码时只使用 Zig 标准库和 libxev 自身 API。所有 IO 操作必须异步完成（libxev 的存在意义就是提供异步 IO，任何同步阻塞 IO 都是根本性设计错误）。
 
 ## 构建命令
 
@@ -78,7 +53,6 @@ zig build test               # 运行所有测试
 | 依赖 | 用途 |
 |------|------|
 | ThreadPool (可选) | 文件 I/O 等无异步 API 的操作 |
-
 
 ## 参考
 
