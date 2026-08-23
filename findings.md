@@ -47,4 +47,4 @@ io_uring 使用内核线程轮询，不需要非阻塞 socket。但上层代码�
 | connect | EVFILT_WRITE | IORING_OP_CONNECT | ConnectEx |
 | accept | EVFILT_READ | IORING_OP_ACCEPT | AcceptEx |
 | close | 可能阻塞 | 同步 | CloseHandle |
-| Timer | EVFILT_TIMER | IORING_OP_TIMEOUT | CreateWaitableTimer |
+| Timer | 用户态堆式 Timer（kqueue.zig:81，避免大量 syscall） | IORING_OP_TIMEOUT（内核超时，取消=timeout_remove） | 用户态堆式 Timer（iocp.zig:32 TimerHeap） |
