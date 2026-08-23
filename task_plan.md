@@ -1,5 +1,7 @@
 # Task Plan: libxev — 跨平台异步事件循环 (fixnet fork)
 
+> 未完成工作（IOCP UDP connect / SQ overflow / Timer 取消 / IOCP 文档）已移交 zigbox 统一规划（zigbox task_plan.md「跨项目统一待办」）。
+
 ## 项目定位
 
 本仓库是 [mitchellh/libxev](https://github.com/mitchellh/libxev) 的 fixnet fork，为 fixnet 生态（zigbox/zigtun/zigproxy/zigdns）提供跨平台异步 I/O 事件循环。
@@ -12,15 +14,6 @@ v0.16.0 (2026-08-05) — 全项目统一版本发布。详细版本历史见 git
 ## 已完成工作
 
 kqueue connect 修复（EADDRNOTAVAIL/EHOSTDOWN/EISCONN）、Timer 时钟更新、io_uring 同步 close、IOCP ConnectEx/WSA 错误映射/CloseHandle/stop_completion、TCP/UDP NONBLOCK initFd、EINTR 重试。详见 git history。
-
-## 待完成工作
-
-| 类别 | 内容 | 优先级 |
-|------|------|--------|
-| Windows IOCP | UDP connect 支持（目前仅 TCP ConnectEx） | P2 |
-| io_uring | 高负载下的 SQ overflow 处理 | P2 |
-| 跨平台 | Timer 取消竞态条件统一 | P2 |
-| 文档 | Windows IOCP 开发指南补充 | P3 |
 
 ## 模块架构
 
