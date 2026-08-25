@@ -279,9 +279,15 @@ fn AsyncMachPort(comptime xev: type) type {
                 else => return error.MachPortAllocFailed,
             }
 
-            // Modify the port queue size to be 1 because we are only
-            // using it for notifications and not for any other purpose.
-            var limits: mach_port_limits = .{ .mpl_qlimit = 1 };
+            // Port queue size. Previously 1: notify() treats SEND_TIMED_OUT /
+            // SEND_NO_BUFFER (queue full) as success assuming "a pending wake
+            // exists", but that message is DROPPED when kevent already fired and
+            // is draining the previous message → wake can be permanently lost
+            // (zigbox bench-socks5 30s hang, #28 2026-08-25). A larger queue
+            // lets notify()s landing inside the drain→re-arm window buffer
+            // instead of dropping; drain() in the wait callback clears it all,
+            // so multiple queued wakes still coalesce into one callback safely.
+            var limits: mach_port_limits = .{ .mpl_qlimit = 32 };
             switch (darwin.getKernError(mach_port_set_attributes(
                 mach_self,
                 mach_port,
