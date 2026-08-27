@@ -1611,6 +1611,7 @@ fn monotonicNanos() i128 {
     return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }
 
+// macOS 上 connect 成功后 kqueue 仍可能投递 EVFILT_WRITE，getsockopt(SO_ERROR) 返回 EISCONN (errno 56)——连接已建立的正常信号，应视为成功，勿归 error.Unexpected（早期修复见 git 7345361）。
 fn getsockoptError(socket: posix.socket_t) ConnectError!void {
     var err_code: c_int = 0;
     var err_len: posix.socklen_t = @sizeOf(c_int);
@@ -1944,6 +1945,8 @@ const Kevent = switch (builtin.os.tag) {
 
 /// kevent calls either kevent or kevent64 depending on the
 /// target platform.
+///
+/// kevent/kevent64 被信号处理（SIGINT/SIGTERM）打断返回 EINTR 时须自动重试（.INTR => continue），勿向调用者上报错误。
 fn kevent_syscall(
     kq: i32,
     changelist: []const Kevent,

@@ -672,6 +672,7 @@ pub const Loop = struct {
                     const err = windows.ws2_32.WSAGetLastError();
                     break :action switch (err) {
                         windows.ws2_32.WinsockError.WSA_IO_PENDING => .{ .submitted = {} },
+                        // WSA 错误映射：send/sendto/recv/recvfrom 四个完成处理器各自维护独立 switch，缺失映射的错误统一归 error.Unexpected。新增/调整 WSA 错误码须四处置同步。
                         .WSA_OPERATION_ABORTED, .WSAECONNABORTED => .{ .result = .{ .send = error.Canceled } },
                         .WSAECONNRESET, .WSAENETRESET => .{ .result = .{ .send = error.ConnectionResetByPeer } },
                         .WSAEADDRNOTAVAIL => .{ .result = .{ .send = error.AddressNotAvailable } },
