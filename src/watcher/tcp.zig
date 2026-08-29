@@ -89,6 +89,22 @@ fn TCPStream(comptime xev: type) type {
             };
         }
 
+        /// 从 fd 构造且跳过非阻塞检查（fcntl 缓存）— 仅用于「fd 已在连接建立点
+        /// 确认非阻塞」的完成回调重建（stream.zig 模板 read/write/close/poll 完成
+        /// 回调每次重建 watcher 类型，若走 initFd 每包触发 2×fcntl syscall，
+        /// 是全链路 CPU 热点，见 sample `__fcntl` ≈336 采样）。
+        ///
+        /// 连接建立点（accept/connect 回调）与外部 fd 入口必须用 initFd（带 fcntl
+        /// 检查并设置 O_NONBLOCK）——内核 accept 的 fd 不继承非阻塞标志。
+        /// 安全依据：进入数据路径的 fd 全部已在构造时确认非阻塞
+        /// （init() 带 SOCK.NONBLOCK / accept+connect 回调 checked / 外部 initFd(fd) checked），
+        /// 完成回调跳过 fcntl 无风险。
+        pub fn initFdNonblock(fd: FdType) Self {
+            return .{
+                .fd = fd,
+            };
+        }
+
         /// TCP_NODELAY（禁 Nagle）— accept/connect 回调的 per-connection 设置点。
         /// 修复 macOS delayed-ACK(100ms) × Nagle 死锁：「握手后多段小写 + 对端沉默」
         /// 的请求（trojan/vless/reality）每连接卡 ~100ms（zigoutbounds findings §35 追加-7）。
@@ -290,7 +306,9 @@ fn TCPStream(comptime xev: type) type {
                             common.userdataValue(Userdata, ud),
                             l_inner,
                             c_inner,
-                            initFd(c_inner.op.shutdown.socket),
+                            // shutdown 完成回调 — fd 即 self.fd，已在连接建立点确认非阻塞，
+                            // 且 shutdown 不执行 I/O，跳过 fcntl 安全。
+                            initFdNonblock(c_inner.op.shutdown.socket),
                             if (r.shutdown) |_| {} else |err| err,
                         });
                     }

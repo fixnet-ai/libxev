@@ -24,6 +24,17 @@ pub const Options = struct {
     pub const WriteMethod = enum { none, write, send };
 };
 
+/// 完成回调里从 fd 重建 watcher 类型。优先走无 fcntl 的快速构造
+/// `initFdNonblock`（fd 已在连接建立点确认非阻塞，跳过每完成回调 2×fcntl
+/// syscall 的全链路 CPU 热点），否则回退带 fcntl 检查的 `initFd`——
+/// GenericStream 等无 fcntl 的 watcher 行为不变。
+fn watcherFromFd(comptime T: type, fd: anytype) T {
+    return if (@hasDecl(T, "initFdNonblock"))
+        T.initFdNonblock(fd)
+    else
+        T.initFd(fd);
+}
+
 /// Returns the shared decls for all streams that should be set for
 /// the xev type.
 pub fn Shared(comptime xev: type) type {
@@ -292,9 +303,9 @@ fn Pollable(comptime xev: type, comptime T: type, comptime options: Options) typ
                         const fd: Self = switch (xev.backend) {
                             .io_uring,
                             .epoll,
-                            => T.initFd(c_inner.op.poll.fd),
+                            => watcherFromFd(T, c_inner.op.poll.fd),
 
-                            .kqueue => T.initFd(c_inner.op.read.fd),
+                            .kqueue => watcherFromFd(T, c_inner.op.read.fd),
 
                             .iocp,
                             .wasi_poll,
@@ -408,7 +419,7 @@ pub fn Closeable(comptime xev: type, comptime T: type, comptime options: Options
                         c_inner: *xev.Completion,
                         r: xev.Result,
                     ) xev.CallbackAction {
-                        const fd = T.initFd(c_inner.op.close.fd);
+                        const fd = watcherFromFd(T, c_inner.op.close.fd);
                         return @call(.always_inline, cb, .{
                             common.userdataValue(Userdata, ud),
                             l_inner,
@@ -567,7 +578,7 @@ pub fn Readable(comptime xev: type, comptime T: type, comptime options: Options)
                                         common.userdataValue(Userdata, ud),
                                         l_inner,
                                         c_inner,
-                                        T.initFd(c_inner.op.recv.fd),
+                                        watcherFromFd(T, c_inner.op.recv.fd),
                                         c_inner.op.recv.buffer,
                                         if (r.recv) |v| v else |err| err,
                                     }),
@@ -576,7 +587,7 @@ pub fn Readable(comptime xev: type, comptime T: type, comptime options: Options)
                                         common.userdataValue(Userdata, ud),
                                         l_inner,
                                         c_inner,
-                                        T.initFd(c_inner.op.read.fd),
+                                        watcherFromFd(T, c_inner.op.read.fd),
                                         c_inner.op.read.buffer,
                                         if (r.read) |v| v else |err| err,
                                     }),
@@ -938,13 +949,13 @@ pub fn Writeable(comptime xev: type, comptime T: type, comptime options: Options
                 .none => unreachable,
 
                 .send => .{
-                    .writer = T.initFd(c.op.send.fd),
+                    .writer = watcherFromFd(T, c.op.send.fd),
                     .buf = c.op.send.buffer,
                     .result = if (r.send) |v| v else |err| err,
                 },
 
                 .write => .{
-                    .writer = T.initFd(c.op.write.fd),
+                    .writer = watcherFromFd(T, c.op.write.fd),
                     .buf = c.op.write.buffer,
                     .result = if (r.write) |v| v else |err| err,
                 },

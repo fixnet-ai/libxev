@@ -84,6 +84,15 @@ fn UDPSendto(comptime xev: type) type {
             };
         }
 
+        /// 从 fd 构造且跳过非阻塞检查（fcntl 缓存）— 与 TCP 同型：sendto/recvfrom
+        /// 完成回调每次重建 watcher 类型，若走 initFd 每包触发 2×fcntl syscall。
+        /// fd 已由 init()/initFd() 在构造点确认非阻塞，完成回调跳过 fcntl 安全。
+        pub fn initFdNonblock(fd: posix.socket_t) Self {
+            return .{
+                .fd = fd,
+            };
+        }
+
         /// Bind the address to the socket.
         pub fn bind(self: Self, addr: std.Io.net.IpAddress) !void {
             const posix_addr = net.Address.fromIpAddress(addr);
@@ -143,7 +152,7 @@ fn UDPSendto(comptime xev: type) type {
                                     c_inner,
                                     s_inner,
                                     net.Address.initPosix(@alignCast(&c_inner.op.recvfrom.addr)).toIpAddress(),
-                                    initFd(c_inner.op.recvfrom.fd),
+                                    initFdNonblock(c_inner.op.recvfrom.fd),
                                     c_inner.op.recvfrom.buffer,
                                     r.recvfrom,
                                 });
@@ -207,7 +216,7 @@ fn UDPSendto(comptime xev: type) type {
                                     l_inner,
                                     c_inner,
                                     s_inner,
-                                    initFd(c_inner.op.sendto.fd),
+                                    initFdNonblock(c_inner.op.sendto.fd),
                                     c_inner.op.sendto.buffer,
                                     r.sendto,
                                 });
@@ -258,6 +267,13 @@ fn UDPSendtoIOCP(comptime xev: type) type {
 
         /// Initialize a UDP socket from a file descriptor.
         pub fn initFd(fd: windows.HANDLE) Self {
+            return .{
+                .fd = fd,
+            };
+        }
+
+        /// 与 initFd 等价（IOCP 完成回调无 fcntl 检查），供完成回调快速路径统一走。
+        pub fn initFdNonblock(fd: windows.HANDLE) Self {
             return .{
                 .fd = fd,
             };
@@ -324,7 +340,7 @@ fn UDPSendtoIOCP(comptime xev: type) type {
                                     c_inner,
                                     s_inner,
                                     net.Address.initPosix(@alignCast(&c_inner.op.recvfrom.addr)).toIpAddress(),
-                                    initFd(c_inner.op.recvfrom.fd),
+                                    initFdNonblock(c_inner.op.recvfrom.fd),
                                     c_inner.op.recvfrom.buffer,
                                     r.recvfrom,
                                 });
@@ -388,7 +404,7 @@ fn UDPSendtoIOCP(comptime xev: type) type {
                                     l_inner,
                                     c_inner,
                                     s_inner,
-                                    initFd(c_inner.op.sendto.fd),
+                                    initFdNonblock(c_inner.op.sendto.fd),
                                     c_inner.op.sendto.buffer,
                                     r.sendto,
                                 });
@@ -474,6 +490,15 @@ fn UDPSendMsg(comptime xev: type) type {
                     _ = posix.system.fcntl(fd, posix.F.SETFL, new_flags);
                 }
             }
+            return .{
+                .fd = fd,
+            };
+        }
+
+        /// 从 fd 构造且跳过非阻塞检查（fcntl 缓存）— 与 TCP 同型：sendto/recvfrom
+        /// 完成回调每次重建 watcher 类型，若走 initFd 每包触发 2×fcntl syscall。
+        /// fd 已由 init()/initFd() 在构造点确认非阻塞，完成回调跳过 fcntl 安全。
+        pub fn initFdNonblock(fd: posix.socket_t) Self {
             return .{
                 .fd = fd,
             };
@@ -569,7 +594,7 @@ fn UDPSendMsg(comptime xev: type) type {
                             c_inner,
                             s_inner,
                             net.Address.initPosix(@ptrCast(&s_inner.op.recv.addr_buffer)).toIpAddress(),
-                            initFd(c_inner.op.recvmsg.fd),
+                            initFdNonblock(c_inner.op.recvmsg.fd),
                             s_inner.op.recv.buf,
                             if (r.recvmsg) |v| v else |err| err,
                         });
@@ -680,7 +705,7 @@ fn UDPSendMsg(comptime xev: type) type {
                             l_inner,
                             c_inner,
                             s_inner,
-                            initFd(c_inner.op.sendmsg.fd),
+                            initFdNonblock(c_inner.op.sendmsg.fd),
                             s_inner.op.send.buf,
                             if (r.sendmsg) |v| v else |err| err,
                         });
