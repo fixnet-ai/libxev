@@ -92,6 +92,11 @@ pub const Loop = struct {
     /// Cached time
     cached_now: posix.timespec,
 
+    /// The list of events, used as both a changelist and eventlist.
+    /// 作为 Loop heap 字段而非 tick/submit 栈局部：Zig 0.16 ReleaseSafe 对
+    /// undefined 栈数组每 tick 生成 12KB 0xaa memset（direct 出站 CPU 47% 热点）。
+    events: [256]Kevent = undefined,
+
     /// Some internal fields we can pack for better space.
     flags: packed struct {
         /// True once it is initialized.
@@ -187,7 +192,7 @@ pub const Loop = struct {
     /// but the kqueue API doesn't provide that level of clarity.
     pub fn submit(self: *Loop) !void {
         // We try to submit as many events at once as we can.
-        var events: [256]Kevent = undefined;
+        // events -> Loop.events 字段（移出栈避免 0xaa）;
         var events_len: usize = 0;
 
         // Submit all the submissions. We copy the submission queue so that
@@ -215,9 +220,9 @@ pub const Loop = struct {
                 }
                 switch (c.flags.state) {
                     // If we're adding then we start the event.
-                    .adding => if (self.start(c, &events[events_len])) {
+                    .adding => if (self.start(c, &self.events[events_len])) {
                         events_len += 1;
-                        if (events_len >= events.len) break :queue_pop;
+                        if (events_len >= self.events.len) break :queue_pop;
                     },
 
                     // If we're deleting then we create a deletion event and
@@ -228,10 +233,10 @@ pub const Loop = struct {
                         c.flags.state = .dead;
                         self.completions.push(c);
 
-                        events[events_len] = ev;
-                        events[events_len].flags = std.c.EV.DELETE;
+                        self.events[events_len] = ev;
+                        self.events[events_len].flags = std.c.EV.DELETE;
                         events_len += 1;
-                        if (events_len >= events.len) break :queue_pop;
+                        if (events_len >= self.events.len) break :queue_pop;
                     },
 
                     // This is set if the completion was canceled while in the
@@ -259,8 +264,8 @@ pub const Loop = struct {
             var timeout = std.mem.zeroes(posix.timespec);
             const completed = try kevent_syscall(
                 self.kqueue_fd,
-                events[0..events_len],
-                events[0..events.len],
+                self.events[0..events_len],
+                self.events[0..self.events.len],
                 &timeout,
             );
             events_len = 0;
@@ -269,7 +274,7 @@ pub const Loop = struct {
             // NOTE: we currently never process completions (we set
             // event list to zero length) because it was leading to
             // memory corruption we need to investigate.
-            for (events[0..completed]) |ev| {
+            for (self.events[0..completed]) |ev| {
                 // Zero udata values are internal events that we do nothing
                 // on such as the mach port wakeup.
                 if (ev.udata == 0) continue;
@@ -361,7 +366,7 @@ pub const Loop = struct {
         }
 
         // The list of events, used as both a changelist and eventlist.
-        var events: [256]Kevent = undefined;
+        // events -> Loop.events 字段（移出栈避免 0xaa）;
 
         // The number of events in the events array to submit as changes
         // on repeat ticks. Used mostly for efficient disarm.
@@ -472,11 +477,11 @@ pub const Loop = struct {
                     // we do nothing because we were never part of the kqueue.
                     .disarm => {
                         if (disarm_ev) |ev| {
-                            events[changes] = ev;
-                            events[changes].flags = std.c.EV.DELETE;
-                            events[changes].udata = 0;
+                            self.events[changes] = ev;
+                            self.events[changes].flags = std.c.EV.DELETE;
+                            self.events[changes].udata = 0;
                             changes += 1;
-                            assert(changes <= events.len);
+                            assert(changes <= self.events.len);
                         }
 
                         if (c_active) self.active -= 1;
@@ -487,7 +492,7 @@ pub const Loop = struct {
                 }
 
                 // If we filled the events slice, we break to avoid overflow.
-                if (changes == events.len) break;
+                if (changes == self.events.len) break;
             }
 
             // Determine our next timeout based on the timers
@@ -518,8 +523,8 @@ pub const Loop = struct {
             const completed = completed: while (true) {
                 break :completed kevent_syscall(
                     self.kqueue_fd,
-                    events[0..changes],
-                    events[0..events.len],
+                    self.events[0..changes],
+                    self.events[0..self.events.len],
                     if (timeout) |*t| t else null,
                 ) catch |err| switch (err) {
                     // This should never happen because we always have
@@ -538,7 +543,7 @@ pub const Loop = struct {
             changes = 0;
 
             // Go through the completed events and queue them.
-            for (events[0..completed]) |ev| {
+            for (self.events[0..completed]) |ev| {
                 if (ev.udata == 0) continue;
 
                 // Ignore any successful deletions. This can only happen
@@ -591,11 +596,11 @@ pub const Loop = struct {
                     .disarm => {
                         // Mark this event for deletion, it'll happen
                         // on the next tick.
-                        events[changes] = ev;
-                        events[changes].flags = std.c.EV.DELETE;
-                        events[changes].udata = 0;
+                        self.events[changes] = ev;
+                        self.events[changes].flags = std.c.EV.DELETE;
+                        self.events[changes].udata = 0;
                         changes += 1;
-                        assert(changes <= events.len);
+                        assert(changes <= self.events.len);
 
                         self.active -= 1;
                     },

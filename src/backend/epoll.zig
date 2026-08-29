@@ -124,6 +124,11 @@ pub const Loop = struct {
         stopped: bool = false,
     } = .{},
 
+    /// 等待/处理事件缓冲，作为 Loop heap 字段而非 tick 栈局部：Zig 0.16
+    /// ReleaseSafe 对 undefined 栈数组每 tick 生成 12KB 0xaa memset
+    /// （direct 出站 CPU 热点，见 findings）。
+    events: [1024]linux.epoll_event = undefined,
+
     pub fn init(options: Options) !Loop {
         var eventfd = try Async.init();
         errdefer eventfd.deinit();
@@ -408,7 +413,7 @@ pub const Loop = struct {
         }
 
         // Wait and process events. We only do this if we have any active.
-        var events: [1024]linux.epoll_event = undefined;
+        // events -> Loop.events 字段（移出栈避免 0xaa）。
         while (self.active > 0 and (wait == 0 or wait_rem > 0)) {
             self.update_now();
             const now_timer: Operation.Timer = .{ .next = self.cached_now };
@@ -471,10 +476,10 @@ pub const Loop = struct {
                 break :timeout @as(i32, @intCast(ms_next -| ms_now));
             };
 
-            const n = epoll_helper.epoll_wait(self.fd, &events, timeout);
+            const n = epoll_helper.epoll_wait(self.fd, &self.events, timeout);
 
             // Process all our events and invoke their completion handlers
-            for (events[0..n]) |ev| {
+            for (self.events[0..n]) |ev| {
                 // Handle wakeup eventfd
                 if (ev.data.fd == self.eventfd.fd) {
                     var buffer: u64 = undefined;

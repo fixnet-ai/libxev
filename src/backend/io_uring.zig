@@ -57,6 +57,11 @@ pub const Loop = struct {
         in_run: bool = false,
     } = .{},
 
+    /// 等待/处理 CQE 缓冲，作为 Loop heap 字段而非 run 栈局部：Zig 0.16
+    /// ReleaseSafe 对 undefined 栈数组每 tick 生成 0xaa memset
+    /// （见 findings，kqueue/epoll/iocp 同款修复）。
+    cqes: [128]linux.io_uring_cqe = undefined,
+
     /// Initialize the event loop. "entries" is the maximum number of
     /// submissions that can be queued at one time. The number of completions
     /// always matches the number of entries so the memory allocated will be
@@ -154,7 +159,7 @@ pub const Loop = struct {
             .no_wait => 0,
         };
 
-        var cqes: [128]linux.io_uring_cqe = undefined;
+        // cqes -> Loop.cqes 字段（移出栈避免 0xaa）。
         while (true) {
             // If we're stopped then the loop is fully over.
             if (self.flags.stopped) break;
@@ -183,14 +188,14 @@ pub const Loop = struct {
             }
 
             // Wait for completions...
-            const count = self.ring.copy_cqes(&cqes, wait) catch |err| switch (err) {
+            const count = self.ring.copy_cqes(&self.cqes, wait) catch |err| switch (err) {
                 // EINTR means our blocking syscall was interrupted by some
                 // process signal. We just retry when we can. See signal(7).
                 error.SignalInterrupt => continue,
                 else => return err,
             };
 
-            for (cqes[0..count]) |cqe| {
+            for (self.cqes[0..count]) |cqe| {
                 const c = @as(?*Completion, @ptrFromInt(@as(usize, @intCast(cqe.user_data)))) orelse continue;
                 self.active -= 1;
                 c.flags.state = .dead;

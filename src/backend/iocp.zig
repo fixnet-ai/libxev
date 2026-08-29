@@ -72,6 +72,11 @@ pub const Loop = struct {
         stopped: bool = false,
     } = .{},
 
+    /// 等待/处理完成条目缓冲，作为 Loop heap 字段而非 tick 栈局部：Zig 0.16
+    /// ReleaseSafe 对 undefined 栈数组每 tick 生成 0xaa memset
+    /// （见 findings，kqueue/epoll 同款修复）。
+    entries: [128]windows.OVERLAPPED_ENTRY = undefined,
+
     /// Initialize a new IOCP-backed event loop. See the Options docs
     /// for what options matter for IOCP.
     pub fn init(options: Options) !Loop {
@@ -210,8 +215,7 @@ pub const Loop = struct {
         defer self.flags.in_run = false;
 
         // The list of entry that will be filled with a call to GetQueuedCompletionStatusEx.
-        var entries: [128]windows.OVERLAPPED_ENTRY = undefined;
-
+        // entries -> Loop.entries 字段（移出栈避免 0xaa）。
         var wait_rem = @as(usize, @intCast(wait));
 
         // Handle all of our cancellations first because we may be able to stop submissions from
@@ -330,7 +334,7 @@ pub const Loop = struct {
             };
 
             // Wait for changes IO completions.
-            const count: u32 = windows.GetQueuedCompletionStatusEx(self.iocp_handle, &entries, timeout, false) catch |err| switch (err) {
+            const count: u32 = windows.GetQueuedCompletionStatusEx(self.iocp_handle, &self.entries, timeout, false) catch |err| switch (err) {
                 // A timeout means that nothing was completed.
                 error.Timeout => 0,
 
@@ -338,7 +342,7 @@ pub const Loop = struct {
             };
 
             // Go through the entries and perform completions callbacks.
-            for (entries[0..count]) |entry| {
+            for (self.entries[0..count]) |entry| {
                 const completion: *Completion = if (entry.lpCompletionKey == 0) completion: {
                     // We retrieve the Completion from the OVERLAPPED pointer as we know it's a part of
                     // the Completion struct.
