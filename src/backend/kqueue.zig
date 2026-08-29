@@ -814,12 +814,22 @@ pub const Loop = struct {
                 break :action .{ .kevent = {} };
             },
 
+            .writev => action: {
+                ev.* = c.kevent().?;
+                break :action .{ .kevent = {} };
+            },
+
             .pwrite => action: {
                 ev.* = c.kevent().?;
                 break :action .{ .kevent = {} };
             },
 
             .read => action: {
+                ev.* = c.kevent().?;
+                break :action .{ .kevent = {} };
+            },
+
+            .readv => action: {
                 ev.* = c.kevent().?;
                 break :action .{ .kevent = {} };
             },
@@ -1167,7 +1177,7 @@ pub const Completion = struct {
                 .udata = @intFromPtr(self),
             }),
 
-            inline .write, .pwrite, .send, .sendto => |v| kevent_init(.{
+            inline .write, .writev, .pwrite, .send, .sendto => |v| kevent_init(.{
                 .ident = @intCast(v.fd),
                 .filter = std.c.EVFILT.WRITE,
                 .flags = std.c.EV.ADD | std.c.EV.ENABLE,
@@ -1176,7 +1186,7 @@ pub const Completion = struct {
                 .udata = @intFromPtr(self),
             }),
 
-            inline .read, .pread, .recv, .recvfrom => |v| kevent_init(.{
+            inline .read, .readv, .pread, .recv, .recvfrom => |v| kevent_init(.{
                 .ident = @intCast(v.fd),
                 .filter = std.c.EVFILT.READ,
                 .flags = std.c.EV.ADD | std.c.EV.ENABLE,
@@ -1223,6 +1233,10 @@ pub const Completion = struct {
                 },
             },
 
+            .writev => |*op| .{
+                .writev = xev_posix.writev(op.fd, op.iovs) catch |err| mapWriteError(err),
+            },
+
             .pwrite => |*op| .{
                 .pwrite = switch (op.buffer) {
                     .slice => |v| xev_posix.pwrite(op.fd, v, op.offset) catch |err| mapWriteError(err),
@@ -1260,6 +1274,10 @@ pub const Completion = struct {
                     else |err|
                         err,
                 };
+            },
+
+            .readv => |*op| .{
+                .readv = xev_posix.readv(op.fd, op.iovs) catch |err| mapReadError(err),
             },
 
             .pread => |*op| res: {
@@ -1384,6 +1402,15 @@ pub const Completion = struct {
                 },
             },
 
+            .writev => .{
+                .writev = switch (errno) {
+                    .SUCCESS => @intCast(r),
+                    .CANCELED => error.Canceled,
+                    .PERM => error.PermissionDenied,
+                    else => |err| posix.unexpectedErrno(err),
+                },
+            },
+
             .pwrite => .{
                 .pwrite = switch (errno) {
                     .SUCCESS => @intCast(r),
@@ -1394,6 +1421,15 @@ pub const Completion = struct {
 
             .read => .{
                 .read = switch (errno) {
+                    .SUCCESS => if (r == 0) error.EOF else @intCast(r),
+                    .CANCELED => error.Canceled,
+                    .PERM => error.PermissionDenied,
+                    else => |err| posix.unexpectedErrno(err),
+                },
+            },
+
+            .readv => .{
+                .readv = switch (errno) {
                     .SUCCESS => if (r == 0) error.EOF else @intCast(r),
                     .CANCELED => error.Canceled,
                     .PERM => error.PermissionDenied,
@@ -1649,6 +1685,8 @@ pub const OperationType = enum {
     connect,
     read,
     write,
+    readv,
+    writev,
     pread,
     pwrite,
     send,
@@ -1690,6 +1728,19 @@ pub const Operation = union(OperationType) {
     write: struct {
         fd: posix.fd_t,
         buffer: WriteBuffer,
+    },
+
+    /// 批读 — 一次 readv 填多个 iov 缓冲（大数据量场景减少 read syscall + kevent 往返）。
+    /// iovs 是用户持有的切片（指针+长度），生命周期覆盖本 completion 完成。
+    readv: struct {
+        fd: posix.fd_t,
+        iovs: []const posix.iovec,
+    },
+
+    /// 批写 — 一次 writev 写出多个独立缓冲段（攒批减少 write syscall 次数）。
+    writev: struct {
+        fd: posix.fd_t,
+        iovs: []const posix.iovec_const,
     },
 
     pread: struct {
@@ -1762,6 +1813,8 @@ pub const Result = union(OperationType) {
     connect: ConnectError!void,
     read: ReadError!usize,
     write: WriteError!usize,
+    readv: ReadError!usize,
+    writev: WriteError!usize,
     pread: ReadError!usize,
     pwrite: WriteError!usize,
     send: WriteError!usize,

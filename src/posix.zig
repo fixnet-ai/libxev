@@ -502,6 +502,85 @@ pub fn read(fd: posix.fd_t, buf: []u8) ReadError!usize {
     }
 }
 
+/// 批读 — 一次 syscall 填多个缓冲区（readv）。
+/// 大数据量场景（socket 接收缓冲积累多块数据）下一次 readv 收满多块，
+/// 比逐块 read 减少 syscall 次数 + kevent 往返（xev-7）。
+/// Zig 0.16 std.posix 无 readv/writev（std.posix.system 亦无），
+/// 故平台分派：Linux 走 inline syscall，其余（macOS/BSD）走 libc extern。
+pub fn readv(fd: posix.fd_t, iovs: []const posix.iovec) ReadError!usize {
+    if (iovs.len == 0) return 0;
+
+    while (true) {
+        const rc_raw = switch (builtin.os.tag) {
+            .linux => std.os.linux.readv(fd, iovs.ptr, iovs.len),
+            else => std.c.readv(fd, iovs.ptr, @intCast(iovs.len)),
+        };
+        const rc: isize = @bitCast(rc_raw);
+        switch (posix.errno(rc)) {
+            .SUCCESS => return @intCast(rc),
+            .INTR => continue,
+            .SRCH => return error.ProcessNotFound,
+            .AGAIN => return error.WouldBlock,
+            .BADF => return error.NotOpenForReading,
+            .IO => return error.InputOutput,
+            .ISDIR => return error.IsDir,
+            .NOBUFS, .NOMEM => return error.SystemResources,
+            .NOTCONN => return error.SocketNotConnected,
+            .CONNRESET => return error.ConnectionResetByPeer,
+            .TIMEDOUT => return error.ConnectionTimedOut,
+            .FAULT, .INVAL => unreachable,
+            .ADDRNOTAVAIL => return error.AddressNotAvailable,
+            .HOSTUNREACH, .NETUNREACH => return error.ConnectionResetByPeer,
+            else => |err| {
+                // EHOSTDOWN (Linux errno 64): host is down, treat as connection reset.
+                if (@intFromEnum(err) == 64) return error.ConnectionResetByPeer;
+                return posix.unexpectedErrno(err);
+            },
+        }
+    }
+}
+
+/// 批写 — 一次 syscall 写出多个独立缓冲段（writev）。
+/// 攒批多段（如多个读缓冲/协议头+body）一次写出，减少 write syscall 次数（xev-7）。
+pub fn writev(fd: posix.fd_t, iovs: []const posix.iovec_const) WriteError!usize {
+    if (iovs.len == 0) return 0;
+
+    while (true) {
+        const rc_raw = switch (builtin.os.tag) {
+            .linux => std.os.linux.writev(fd, iovs.ptr, iovs.len),
+            else => std.c.writev(fd, iovs.ptr, @intCast(iovs.len)),
+        };
+        const rc: isize = @bitCast(rc_raw);
+        switch (posix.errno(rc)) {
+            .SUCCESS => return @intCast(rc),
+            .INTR => continue,
+            .INVAL => return error.InvalidArgument,
+            .SRCH => return error.ProcessNotFound,
+            .AGAIN => return error.WouldBlock,
+            .BADF => return error.NotOpenForWriting,
+            .DQUOT => return error.DiskQuota,
+            .FBIG => return error.FileTooBig,
+            .IO => return error.InputOutput,
+            .NOSPC => return error.NoSpaceLeft,
+            .ACCES => return error.AccessDenied,
+            .PERM => return error.PermissionDenied,
+            .PIPE => return error.BrokenPipe,
+            .CONNRESET => return error.ConnectionResetByPeer,
+            .BUSY => return error.DeviceBusy,
+            .MSGSIZE => return error.MessageTooBig,
+            .NOBUFS, .NOMEM => return error.SystemResources,
+            .FAULT, .DESTADDRREQ => unreachable,
+            .ADDRNOTAVAIL => return error.AddressNotAvailable,
+            .HOSTUNREACH, .NETUNREACH => return error.ConnectionResetByPeer,
+            else => |err| {
+                // EHOSTDOWN (Linux errno 64): host is down, treat as connection reset.
+                if (@intFromEnum(err) == 64) return error.ConnectionResetByPeer;
+                return posix.unexpectedErrno(err);
+            },
+        }
+    }
+}
+
 pub fn pwrite(fd: posix.fd_t, bytes: []const u8, offset: u64) PWriteError!usize {
     if (bytes.len == 0) return 0;
 

@@ -137,6 +137,7 @@ pub fn Stream(comptime xev: type, comptime T: type, comptime options: Options) t
 
         const R_: ?type = if (options.read != .none) Readable(xev, T, options) else null;
         pub const read = if (R_) |R| R.read else {};
+        pub const readv = if (R_) |R| R.readv else {};
 
         const W_: ?type = if (options.write != .none) Writeable(xev, T, options) else null;
         pub const writeInit = if (W_) |W| writeInit: {
@@ -144,6 +145,7 @@ pub fn Stream(comptime xev: type, comptime T: type, comptime options: Options) t
             break :writeInit W.writeInit;
         } else {};
         pub const write = if (W_) |W| W.write else null;
+        pub const writev = if (W_) |W| W.writev else {};
         pub const queueWrite = if (W_) |W| W.queueWrite else {};
     };
 }
@@ -518,6 +520,33 @@ pub fn Readable(comptime xev: type, comptime T: type, comptime options: Options)
                 },
             }
         }
+
+        /// dynamic xev 的 readv — 不支持（批 IO 仅 static API + kqueue/epoll 后端）。
+        /// 调用即 @compileError，防止误用 dynamic 后端。
+        pub fn readv(
+            self: Self,
+            loop: *xev.Loop,
+            c: *xev.Completion,
+            iovs: []const std.posix.iovec,
+            comptime Userdata: type,
+            userdata: ?*Userdata,
+            comptime cb: *const fn (
+                ud: ?*Userdata,
+                l: *xev.Loop,
+                c: *xev.Completion,
+                s: Self,
+                i: []const std.posix.iovec,
+                r: xev.ReadError!usize,
+            ) xev.CallbackAction,
+        ) void {
+            _ = self;
+            _ = loop;
+            _ = c;
+            _ = iovs;
+            _ = userdata;
+            _ = cb;
+            @compileError("readv 批读仅支持 static xev（kqueue/epoll 后端）；dynamic xev 未实现");
+        }
     };
 
     return struct {
@@ -626,6 +655,77 @@ pub fn Readable(comptime xev: type, comptime T: type, comptime options: Options)
                 },
             }
         }
+
+        /// 批读 — 一次 readv 填多个 iov 缓冲。大数据量场景（socket 接收缓冲
+        /// 里积累了多块数据）一次收满多块，比逐块 read 减少 syscall 与事件往返。
+        /// 仅 kqueue/epoll 后端支持；io_uring/iocp 未实现 readv op，调用报 @compileError。
+        /// 调用方持有 iovs 切片，其生命周期须覆盖本次 completion 完成。
+        pub fn readv(
+            self: Self,
+            loop: *xev.Loop,
+            c: *xev.Completion,
+            iovs: []const std.posix.iovec,
+            comptime Userdata: type,
+            userdata: ?*Userdata,
+            comptime cb: *const fn (
+                ud: ?*Userdata,
+                l: *xev.Loop,
+                c: *xev.Completion,
+                s: Self,
+                i: []const std.posix.iovec,
+                r: xev.ReadError!usize,
+            ) xev.CallbackAction,
+        ) void {
+            // 构造 op 前先检查 backend 支持（io_uring/iocp 的 Operation union 无
+            // readv 字段，直接构造会在其类型上报 no field 错误）。
+            if (!comptime @hasField(@TypeOf(c.op), "readv")) {
+                @compileError("readv requires backend support (kqueue/epoll); io_uring/iocp not implemented");
+            }
+
+            c.* = .{
+                .op = .{ .readv = .{ .fd = self.fd, .iovs = iovs } },
+                .userdata = userdata,
+                .callback = (struct {
+                    fn callback(
+                        ud: ?*anyopaque,
+                        l_inner: *xev.Loop,
+                        c_inner: *xev.Completion,
+                        r: xev.Result,
+                    ) xev.CallbackAction {
+                        return @call(.always_inline, cb, .{
+                            common.userdataValue(Userdata, ud),
+                            l_inner,
+                            c_inner,
+                            watcherFromFd(T, c_inner.op.readv.fd),
+                            c_inner.op.readv.iovs,
+                            if (r.readv) |v| v else |err| err,
+                        });
+                    }
+                }).callback,
+            };
+
+            switch (xev.backend) {
+                // 已在函数开头 @hasField 检查，io_uring/iocp 编译期拦截
+                .io_uring,
+                .wasi_poll,
+                .iocp,
+                => unreachable,
+
+                .epoll => {
+                    if (options.threadpool) {
+                        c.flags.threadpool = true;
+                    } else {
+                        c.flags.dup = true;
+                    }
+                },
+
+                .kqueue => {
+                    if (options.threadpool) c.flags.threadpool = true;
+                },
+            }
+
+            loop.add(c);
+        }
     };
 }
 
@@ -694,6 +794,33 @@ pub fn Writeable(comptime xev: type, comptime T: type, comptime options: Options
                     );
                 },
             }
+        }
+
+        /// dynamic xev 的 writev — 不支持（批 IO 仅 static API + kqueue/epoll 后端）。
+        /// 调用即 @compileError，防止误用 dynamic 后端。
+        pub fn writev(
+            self: Self,
+            loop: *xev.Loop,
+            c: *xev.Completion,
+            iovs: []const std.posix.iovec_const,
+            comptime Userdata: type,
+            userdata: ?*Userdata,
+            comptime cb: *const fn (
+                ud: ?*Userdata,
+                l: *xev.Loop,
+                c: *xev.Completion,
+                s: Self,
+                i: []const std.posix.iovec_const,
+                r: xev.WriteError!usize,
+            ) xev.CallbackAction,
+        ) void {
+            _ = self;
+            _ = loop;
+            _ = c;
+            _ = iovs;
+            _ = userdata;
+            _ = cb;
+            @compileError("writev 批写仅支持 static xev（kqueue/epoll 后端）；dynamic xev 未实现");
         }
 
         pub fn queueWrite(
@@ -939,6 +1066,76 @@ pub fn Writeable(comptime xev: type, comptime T: type, comptime options: Options
             loop.add(c);
         }
 
+        /// 批写 — 一次 writev 写出多个独立缓冲段（攒批减少 write syscall 次数）。
+        /// 仅 kqueue/epoll 后端支持；io_uring/iocp 未实现 writev op，调用报 @compileError。
+        /// 调用方持有 iovs 切片，其生命周期须覆盖本次 completion 完成。
+        pub fn writev(
+            self: Self,
+            loop: *xev.Loop,
+            c: *xev.Completion,
+            iovs: []const std.posix.iovec_const,
+            comptime Userdata: type,
+            userdata: ?*Userdata,
+            comptime cb: *const fn (
+                ud: ?*Userdata,
+                l: *xev.Loop,
+                c: *xev.Completion,
+                s: Self,
+                i: []const std.posix.iovec_const,
+                r: xev.WriteError!usize,
+            ) xev.CallbackAction,
+        ) void {
+            // 构造 op 前先检查 backend 支持（io_uring/iocp 的 Operation union 无
+            // writev 字段，直接构造会在其类型上报 no field 错误）。
+            if (!comptime @hasField(@TypeOf(c.op), "writev")) {
+                @compileError("writev requires backend support (kqueue/epoll); io_uring/iocp not implemented");
+            }
+
+            c.* = .{
+                .op = .{ .writev = .{ .fd = self.fd, .iovs = iovs } },
+                .userdata = userdata,
+                .callback = (struct {
+                    fn callback(
+                        ud: ?*anyopaque,
+                        l_inner: *xev.Loop,
+                        c_inner: *xev.Completion,
+                        r: xev.Result,
+                    ) xev.CallbackAction {
+                        return @call(.always_inline, cb, .{
+                            common.userdataValue(Userdata, ud),
+                            l_inner,
+                            c_inner,
+                            watcherFromFd(T, c_inner.op.writev.fd),
+                            c_inner.op.writev.iovs,
+                            if (r.writev) |v| v else |err| err,
+                        });
+                    }
+                }).callback,
+            };
+
+            switch (xev.backend) {
+                // 已在函数开头 @hasField 检查，io_uring/iocp 编译期拦截
+                .io_uring,
+                .wasi_poll,
+                .iocp,
+                => unreachable,
+
+                .epoll => {
+                    if (options.threadpool) {
+                        c.flags.threadpool = true;
+                    } else {
+                        c.flags.dup = true;
+                    }
+                },
+
+                .kqueue => {
+                    if (options.threadpool) c.flags.threadpool = true;
+                },
+            }
+
+            loop.add(c);
+        }
+
         /// Extracts the result from a completion for a write callback.
         inline fn write_result(c: *xev.Completion, r: xev.Result) struct {
             writer: Self,
@@ -1071,6 +1268,8 @@ pub fn GenericStream(comptime xev: type) type {
         pub const poll = S.poll;
         pub const read = S.read;
         pub const write = S.write;
+        pub const readv = S.readv;
+        pub const writev = S.writev;
         pub const writeInit = S.writeInit;
         pub const queueWrite = S.queueWrite;
 
@@ -1117,6 +1316,8 @@ pub fn GenericStream(comptime xev: type) type {
         pub const poll = S.poll;
         pub const read = S.read;
         pub const write = S.write;
+        pub const readv = S.readv;
+        pub const writev = S.writev;
         pub const writeInit = S.writeInit;
         pub const queueWrite = S.queueWrite;
 

@@ -50,6 +50,8 @@ fn FileStream(comptime xev: type) type {
         pub const poll = S.poll;
         pub const read = S.read;
         pub const write = S.write;
+        pub const readv = S.readv;
+        pub const writev = S.writev;
         pub const writeInit = S.writeInit;
         pub const queueWrite = S.queueWrite;
 
@@ -465,6 +467,8 @@ fn FileDynamic(comptime xev: type) type {
         pub const poll = S.poll;
         pub const read = S.read;
         pub const write = S.write;
+        pub const readv = S.readv;
+        pub const writev = S.writev;
         pub const queueWrite = S.queueWrite;
 
         pub fn init(file: std.Io.File) !Self {

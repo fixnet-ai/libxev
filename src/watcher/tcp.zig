@@ -44,6 +44,8 @@ fn TCPStream(comptime xev: type) type {
         pub const poll = S.poll;
         pub const read = S.read;
         pub const write = S.write;
+        pub const readv = S.readv;
+        pub const writev = S.writev;
         pub const writeInit = S.writeInit;
         pub const queueWrite = S.queueWrite;
 
@@ -348,6 +350,8 @@ fn TCPDynamic(comptime xev: type) type {
         pub const poll = S.poll;
         pub const read = S.read;
         pub const write = S.write;
+        pub const readv = S.readv;
+        pub const writev = S.writev;
         pub const queueWrite = S.queueWrite;
 
         pub fn init(addr: std.Io.net.IpAddress) !Self {
@@ -1013,6 +1017,183 @@ fn TCPTests(comptime xev: type, comptime Impl: type) type {
             try testing.expect(server_conn == null);
             try testing.expect(!connected);
             try testing.expect(server_closed);
+        }
+
+        test "TCP: readv/writev batch IO" {
+            // 批接口仅 static API 的 kqueue/epoll 后端实现；dynamic 或 io_uring/iocp
+            // 后端编译期跳过（readv 调用在其上 @compileError）。
+            if (comptime xev.dynamic) return error.SkipZigTest;
+            if (comptime xev.backend != .kqueue and xev.backend != .epoll) return error.SkipZigTest;
+
+            const testing = std.testing;
+
+            var tpool = ThreadPool.init(.{});
+            defer tpool.deinit();
+            defer tpool.shutdown();
+            var loop = try xev.Loop.init(.{ .thread_pool = &tpool });
+            defer loop.deinit();
+
+            // Choose random available port (Zig #14907)
+            var address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+            const server = try Impl.init(address);
+
+            // Bind and listen
+            try server.bind(address);
+            try server.listen(1);
+
+            // Retrieve bound port and initialize client
+            var internal_addr = net.Address.fromIpAddress(address);
+            var sock_len = internal_addr.getOsSockLen();
+            try xev_posix.getsockname(server.fd, &internal_addr.any, &sock_len);
+            address = internal_addr.toIpAddress();
+            const client = try Impl.init(address);
+
+            // Completions we need
+            var c_accept: xev.Completion = undefined;
+            var c_connect: xev.Completion = undefined;
+
+            // Accept
+            var server_conn: ?Impl = null;
+            server.accept(&loop, &c_accept, ?Impl, &server_conn, (struct {
+                fn callback(
+                    ud: ?*?Impl,
+                    _: *xev.Loop,
+                    _: *xev.Completion,
+                    r: xev.AcceptError!Impl,
+                ) xev.CallbackAction {
+                    ud.?.* = r catch unreachable;
+                    return .disarm;
+                }
+            }).callback);
+
+            // Connect
+            var connected: bool = false;
+            client.connect(&loop, &c_connect, address, bool, &connected, (struct {
+                fn callback(
+                    ud: ?*bool,
+                    _: *xev.Loop,
+                    _: *xev.Completion,
+                    _: Impl,
+                    r: xev.ConnectError!void,
+                ) xev.CallbackAction {
+                    _ = r catch unreachable;
+                    ud.?.* = true;
+                    return .disarm;
+                }
+            }).callback);
+
+            // Wait for the connection to be established
+            try loop.run(.until_done);
+            try testing.expect(server_conn != null);
+            try testing.expect(connected);
+
+            // 写入三段独立缓冲，writev 一次攒批写出
+            const seg1 = "Hello, ";
+            const seg2 = "batch ";
+            const seg3 = "world!";
+            const total = seg1.len + seg2.len + seg3.len;
+            var w_iovs = [_]posix.iovec_const{
+                .{ .base = seg1.ptr, .len = seg1.len },
+                .{ .base = seg2.ptr, .len = seg2.len },
+                .{ .base = seg3.ptr, .len = seg3.len },
+            };
+            var written: usize = 0;
+            client.writev(&loop, &c_connect, &w_iovs, usize, &written, (struct {
+                fn callback(
+                    w: ?*usize,
+                    _: *xev.Loop,
+                    _: *xev.Completion,
+                    _: Impl,
+                    _: []const posix.iovec_const,
+                    r: xev.WriteError!usize,
+                ) xev.CallbackAction {
+                    w.?.* = r catch unreachable;
+                    return .disarm;
+                }
+            }).callback);
+
+            // 接收端 readv 循环读：每轮 2 个 iov 段，填满验证多段一次收齐
+            const Receiver = struct {
+                loop: *xev.Loop,
+                conn: Impl,
+                completion: xev.Completion = .{},
+                buf: [total]u8 = undefined,
+                bytes_read: usize = 0,
+                iovs: [2]posix.iovec = undefined,
+
+                pub fn read(receiver: *@This()) void {
+                    if (receiver.bytes_read == receiver.buf.len) return;
+
+                    const rem = receiver.buf[receiver.bytes_read..];
+                    const chunk = rem.len / 2;
+                    receiver.iovs = .{
+                        .{ .base = rem[0..chunk].ptr, .len = chunk },
+                        .{ .base = rem[chunk..].ptr, .len = rem.len - chunk },
+                    };
+                    receiver.conn.readv(receiver.loop, &receiver.completion, &receiver.iovs, @This(), receiver, readCb);
+                }
+
+                pub fn readCb(
+                    receiver_opt: ?*@This(),
+                    _: *xev.Loop,
+                    _: *xev.Completion,
+                    _: Impl,
+                    _: []const posix.iovec,
+                    r: xev.ReadError!usize,
+                ) xev.CallbackAction {
+                    var receiver = receiver_opt.?;
+                    const n_bytes = r catch unreachable;
+
+                    receiver.bytes_read += n_bytes;
+                    if (receiver.bytes_read < receiver.buf.len) {
+                        receiver.read();
+                    }
+
+                    return .disarm;
+                }
+            };
+            var receiver = Receiver{
+                .loop = &loop,
+                .conn = server_conn.?,
+            };
+            receiver.read();
+
+            // Wait for the batch send/receive
+            try loop.run(.until_done);
+            try testing.expectEqual(written, total);
+            try testing.expectEqualSlices(u8, seg1 ++ seg2 ++ seg3, receiver.buf[0..receiver.bytes_read]);
+
+            // Close
+            server_conn.?.close(&loop, &c_accept, ?Impl, &server_conn, (struct {
+                fn callback(
+                    ud: ?*?Impl,
+                    _: *xev.Loop,
+                    _: *xev.Completion,
+                    _: Impl,
+                    r: xev.CloseError!void,
+                ) xev.CallbackAction {
+                    _ = r catch unreachable;
+                    ud.?.* = null;
+                    return .disarm;
+                }
+            }).callback);
+            client.close(&loop, &c_connect, bool, &connected, (struct {
+                fn callback(
+                    ud: ?*bool,
+                    _: *xev.Loop,
+                    _: *xev.Completion,
+                    _: Impl,
+                    r: xev.CloseError!void,
+                ) xev.CallbackAction {
+                    _ = r catch unreachable;
+                    ud.?.* = false;
+                    return .disarm;
+                }
+            }).callback);
+
+            try loop.run(.until_done);
+            try testing.expect(server_conn == null);
+            try testing.expect(!connected);
         }
     };
 }

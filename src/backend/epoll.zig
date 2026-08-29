@@ -654,6 +654,30 @@ pub const Loop = struct {
                 )) null else |err| .{ .read = err };
             },
 
+            .readv => res: {
+                // readv/writev 批 IO：socket 路径非阻塞直接注册（threadpool=false）；
+                // 阻塞 fd（如 File 走 threadpool）则调度线程池执行 blocking readv。
+                if (completion.flags.threadpool) {
+                    if (self.thread_schedule(completion)) |_|
+                        return
+                    else |err|
+                        break :res .{ .readv = err };
+                }
+
+                var ev: linux.epoll_event = .{
+                    .events = linux.EPOLL.IN | linux.EPOLL.RDHUP,
+                    .data = .{ .ptr = @intFromPtr(completion) },
+                };
+
+                const fd = completion.fd_maybe_dup() catch |err| break :res .{ .readv = err };
+                break :res if (epoll_helper.epoll_ctl(
+                    self.fd,
+                    linux.EPOLL.CTL_ADD,
+                    fd,
+                    &ev,
+                )) null else |err| .{ .readv = err };
+            },
+
             .pread => res: {
                 if (completion.flags.threadpool) {
                     if (self.thread_schedule(completion)) |_|
@@ -696,6 +720,28 @@ pub const Loop = struct {
                     fd,
                     &ev,
                 )) null else |err| .{ .write = err };
+            },
+
+            .writev => res: {
+                if (completion.flags.threadpool) {
+                    if (self.thread_schedule(completion)) |_|
+                        return
+                    else |err|
+                        break :res .{ .writev = err };
+                }
+
+                var ev: linux.epoll_event = .{
+                    .events = linux.EPOLL.OUT,
+                    .data = .{ .ptr = @intFromPtr(completion) },
+                };
+
+                const fd = completion.fd_maybe_dup() catch |err| break :res .{ .writev = err };
+                break :res if (epoll_helper.epoll_ctl(
+                    self.fd,
+                    linux.EPOLL.CTL_ADD,
+                    fd,
+                    &ev,
+                )) null else |err| .{ .writev = err };
             },
 
             .pwrite => res: {
@@ -1049,6 +1095,10 @@ pub const Completion = struct {
                 };
             },
 
+            .readv => |*op| .{
+                .readv = xev_posix.readv(op.fd, op.iovs),
+            },
+
             .pread => |*op| res: {
                 const n_ = switch (op.buffer) {
                     .slice => |v| xev_posix.pread(op.fd, v, op.offset),
@@ -1068,6 +1118,10 @@ pub const Completion = struct {
                     .slice => |v| xev_posix.write(op.fd, v),
                     .array => |*v| xev_posix.write(op.fd, v.array[0..v.len]),
                 },
+            },
+
+            .writev => |*op| .{
+                .writev = xev_posix.writev(op.fd, op.iovs),
             },
 
             .pwrite => |*op| .{
@@ -1143,9 +1197,11 @@ pub const Completion = struct {
             .connect => |v| v.socket,
             .poll => |v| v.fd,
             .read => |v| v.fd,
+            .readv => |v| v.fd,
             .pread => |v| v.fd,
             .recv => |v| v.fd,
             .write => |v| v.fd,
+            .writev => |v| v.fd,
             .pwrite => |v| v.fd,
             .send => |v| v.fd,
             .sendmsg => |v| v.fd,
@@ -1169,8 +1225,10 @@ pub const OperationType = enum {
     connect,
     poll,
     read,
+    readv,
     pread,
     write,
+    writev,
     pwrite,
     send,
     recv,
@@ -1190,8 +1248,10 @@ pub const Result = union(OperationType) {
     connect: ConnectError!void,
     poll: PollError!void,
     read: ReadError!usize,
+    readv: ReadError!usize,
     pread: ReadError!usize,
     write: WriteError!usize,
+    writev: WriteError!usize,
     pwrite: WriteError!usize,
     send: WriteError!usize,
     recv: ReadError!usize,
@@ -1237,6 +1297,12 @@ pub const Operation = union(OperationType) {
         buffer: ReadBuffer,
     },
 
+    /// 批读 — 一次 readv 填多个 iov 缓冲（大数据量场景减少 read syscall + 事件往返）。
+    readv: struct {
+        fd: posix.fd_t,
+        iovs: []const posix.iovec,
+    },
+
     pread: struct {
         fd: posix.fd_t,
         buffer: ReadBuffer,
@@ -1246,6 +1312,12 @@ pub const Operation = union(OperationType) {
     write: struct {
         fd: posix.fd_t,
         buffer: WriteBuffer,
+    },
+
+    /// 批写 — 一次 writev 写出多个独立缓冲段（攒批减少 write syscall 次数）。
+    writev: struct {
+        fd: posix.fd_t,
+        iovs: []const posix.iovec_const,
     },
 
     pwrite: struct {
