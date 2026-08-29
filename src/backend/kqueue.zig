@@ -614,7 +614,11 @@ pub const Loop = struct {
             }
 
             // If we ran through the loop once we break if we don't care.
-            if (wait == 0) break;
+            // 注意：wait==0 但 changes>0 时不能 break — 否则本次事件处理中
+            // 调度的 disarm DELETE 会被丢弃，level-triggered kevent（读）残留，
+            // 下一 tick 重复触发同一 completion（relay 复用 active 写 completion
+            // → null-result panic，socketpair 大块转发测试暴露）。
+            if (wait == 0 and changes == 0) break;
         }
     }
 
