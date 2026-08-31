@@ -1333,8 +1333,8 @@ pub const Completion = struct {
                         const ev = ev_ orelse
                             break :res .{ .read = error.MissingKevent };
                         break :empty @intCast(ev.data);
-                    } else xev_posix.recvfrom(op.fd, v, 0, &op.addr, &op.addr_size) catch |err| mapReadError(err),
-                    .array => |*v| xev_posix.recvfrom(op.fd, v, 0, &op.addr, &op.addr_size) catch |err| mapReadError(err),
+                    } else xev_posix.recvfrom(op.fd, v, 0, @ptrCast(&op.addr), &op.addr_size) catch |err| mapReadError(err),
+                    .array => |*v| xev_posix.recvfrom(op.fd, v, 0, @ptrCast(&op.addr), &op.addr_size) catch |err| mapReadError(err),
                 };
 
                 break :res .{
@@ -1788,8 +1788,11 @@ pub const Operation = union(OperationType) {
     recvfrom: struct {
         fd: posix.fd_t,
         buffer: ReadBuffer,
-        addr: posix.sockaddr = undefined,
-        addr_size: posix.socklen_t = @sizeOf(posix.sockaddr),
+        /// IPv6 需 28B(sockaddr_in6),posix.sockaddr(16B) 会截断地址
+        /// (VT-IP6-4 IPv6 UDP 根因: recvfrom 只写 16B → 解析出 ::)。用 net.Address
+        /// (extern union, 最大成员 in6) 容纳双栈。
+        addr: net.Address = undefined,
+        addr_size: posix.socklen_t = @sizeOf(net.Address),
     },
 
     close: struct {
