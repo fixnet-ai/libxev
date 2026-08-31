@@ -209,6 +209,9 @@ pub const Loop = struct {
             var connect_skipped: usize = 0;
             queue_pop: while (queued.pop()) |c| {
                 submit_count += 1;
+                if (c.op == .machport) {
+                    std.log.debug("[kq:submit] machport in queue: port={d} c={d}", .{ c.op.machport.port, @intFromPtr(c) });
+                }
                 if (c.op == .connect) {
                     connect_count += 1;
                     if (c.flags.state != .adding) {
@@ -268,6 +271,7 @@ pub const Loop = struct {
                 self.events[0..self.events.len],
                 &timeout,
             );
+            std.log.debug("[kq:submit] kevent completed={d}", .{completed});
             events_len = 0;
 
             // Go through the completed events and queue them.
@@ -275,6 +279,9 @@ pub const Loop = struct {
             // event list to zero length) because it was leading to
             // memory corruption we need to investigate.
             for (self.events[0..completed]) |ev| {
+                std.log.debug("[kq:submit] event: filter={d} ident={d} udata={d} flags=0x{x} data={d}", .{
+                    ev.filter, ev.ident, ev.udata, ev.flags, ev.data,
+                });
                 // Zero udata values are internal events that we do nothing
                 // on such as the mach port wakeup.
                 if (ev.udata == 0) continue;
