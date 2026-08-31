@@ -308,9 +308,15 @@ pub const Loop = struct {
                     // Lower our waiters
                     wait_rem -|= 1;
 
+                    // callback 前记录本轮代际：callback 内可能同步重新 wait()
+                    // 刷新代际，清除须匹配旧代际，避免误删新 waiter（#169）。
+                    const completed_gen = c.op.async_wait.waiter_gen;
                     const action = c.callback(c.userdata, self, c, .{ .async_wait = {} });
                     switch (action) {
-                        .disarm => {},
+                        // UAF 修复（#168）：completion 完成（disarm）→ 清除
+                        // AsyncIOCP.waiter，否则 notify() 会访问已销毁的 completion。
+                        // .rearm 不清除：completion 重新挂载，waiter 仍指向有效指针。
+                        .disarm => clearAsyncWaiter(c, completed_gen),
                         .rearm => self.start_completion(c),
                     }
                 }
@@ -915,9 +921,31 @@ pub const Loop = struct {
                 // 这些 ops 没有 IOCP overlapped 操作可取消 — 直接标记为 dead。
                 // 在 loop 关闭期间可能仍有未处理的 cancel/async_wait 等队列型
                 // completion 处于 active 状态，它们没有内核资源需要释放。
+                // async_wait 取消时同步清除 AsyncIOCP.waiter（UAF 修复，#168），
+                // 防止 loop 关闭后 notify() 仍 async_notify 该 completion。
+                if (completion.op == .async_wait) {
+                    clearAsyncWaiter(completion, completion.op.async_wait.waiter_gen);
+                }
                 completion.flags.state = .dead;
                 self.active -= 1;
             },
+        }
+    }
+
+    // UAF 修复（#168）：async_wait completion 完成（disarm）或被取消时，清除
+    // AsyncIOCP.waiter 悬垂指针。清除后 notify() 不再 async_notify 已销毁的
+    // completion，唤醒由 AsyncIOCP 的 sticky 标志（wait() 消费补发）兜底。
+    // 注意：rearm 路径必须保留 waiter —— completion 重新挂载，指针仍有效。
+    // gen 是 callback 前记录的「本轮 wait 代际」，匹配则清、不匹配则跳过
+    // （callback 内同步重新 wait() 会刷新代际，防止误删新 waiter，#169）。
+    fn clearAsyncWaiter(completion: *Completion, gen: u32) void {
+        switch (completion.op) {
+            .async_wait => |*v| {
+                if (v.waiter_clear) |clear| {
+                    clear(v.waiter_owner.?, completion, gen);
+                }
+            },
+            else => {},
         }
     }
 
@@ -1466,6 +1494,15 @@ pub const Operation = union(OperationType) {
 
     async_wait: struct {
         wakeup: std.atomic.Value(bool) = .{ .raw = false },
+
+        /// UAF 修复（#168）：waiter 清除回调。completion 完成（disarm）或被取消
+        /// 时必须调用，清除 AsyncIOCP.waiter 中指向本 completion 的悬垂指针，
+        /// 否则后续 notify() 会访问已销毁的 completion。仅 IOCP 后端的 Async wait
+        /// 设置，其余后端（eventfd/machport）保持 null。
+        waiter_clear: ?*const fn (owner: *anyopaque, c: *Completion, gen: u32) void = null,
+        waiter_owner: ?*anyopaque = null,
+        /// wait() 写回的本轮代际，供清除时区分新旧 wait（#169 卡死回归）。
+        waiter_gen: u32 = 0,
     },
 
     job_object: struct {

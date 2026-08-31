@@ -354,6 +354,7 @@ fn AsyncMachPort(comptime xev: type) type {
                     ) xev.CallbackAction {
                         // Drain the mach port so that we only fire one
                         // notification even if many are queued.
+                        std.log.debug("[async.mach] wait cb fired, draining port={d}", .{c_inner.op.machport.port});
                         drain(c_inner.op.machport.port);
 
                         return @call(.always_inline, cb, .{
@@ -420,17 +421,17 @@ fn AsyncMachPort(comptime xev: type) type {
                 .msgh_id = undefined,
             };
 
-            return switch (darwin.getMachMsgError(
-                darwin.mach_msg(
-                    &msg,
-                    darwin.MACH_SEND_MSG | darwin.MACH_SEND_TIMEOUT,
-                    msg.msgh_size,
-                    0,
-                    darwin.MACH_PORT_NULL,
-                    0, // Fail instantly if the port is full
-                    darwin.MACH_PORT_NULL,
-                ),
-            )) {
+            const rc = darwin.mach_msg(
+                &msg,
+                darwin.MACH_SEND_MSG | darwin.MACH_SEND_TIMEOUT,
+                msg.msgh_size,
+                0,
+                darwin.MACH_PORT_NULL,
+                0, // Fail instantly if the port is full
+                darwin.MACH_PORT_NULL,
+            );
+            std.log.debug("[async.mach] notify port={d} rc={d}", .{ self.port, rc });
+            return switch (darwin.getMachMsgError(rc)) {
                 .SUCCESS => {},
                 else => |e| {
                     std.log.warn("mach msg err={}", .{e});
@@ -552,7 +553,12 @@ fn AsyncIOCP(comptime xev: type) type {
         waiter: ?struct {
             loop: *xev.Loop,
             c: *xev.Completion,
+            gen: u32,
         } = null,
+        /// wait() 递增的代际序号。completion 完成（disarm）时用它区分当前 waiter
+        /// 是否仍属于「本次 wait」—— callback 内同步重新 wait() 会拿到新 gen，
+        /// 避免清除误删新 waiter（#169 relay 双向卡死回归）。
+        waiter_gen: u32 = 0,
 
         pub fn init() !Self {
             return Self{};
@@ -576,7 +582,10 @@ fn AsyncIOCP(comptime xev: type) type {
             ) xev.CallbackAction,
         ) void {
             c.* = .{
-                .op = .{ .async_wait = .{} },
+                .op = .{ .async_wait = .{
+                    .waiter_clear = &Self.clearWaiterCb,
+                    .waiter_owner = @ptrCast(self),
+                } },
                 .userdata = userdata,
                 .callback = (struct {
                     fn callback(
@@ -600,10 +609,14 @@ fn AsyncIOCP(comptime xev: type) type {
             self.guard.lockUncancelable(io);
             defer self.guard.unlock(io);
 
+            self.waiter_gen +%= 1;
             self.waiter = .{
                 .loop = loop,
                 .c = c,
+                .gen = self.waiter_gen,
             };
+            // 把本轮代际写回 completion，供 iocp.zig 完成时匹配清除（#169）。
+            c.op.async_wait.waiter_gen = self.waiter_gen;
 
             // sticky 消费：置位后必须清除，否则每次 wait 都自我补发 PQCS
             // → async 触发 → 重挂 → 再补发的永久自触发循环（#65：worker
@@ -612,6 +625,25 @@ fn AsyncIOCP(comptime xev: type) type {
                 self.wakeup = false;
                 loop.async_notify(c);
             }
+        }
+
+        /// 清除 waiter 中指向指定 completion 的项（须匹配代际）。由 iocp.zig 在
+        /// completion 完成（disarm）或取消时调用，防止 notify() 访问已销毁的
+        /// completion（#168 memconn Windows cross-thread UAF 根因）。gen 匹配避免
+        /// 误删 callback 内同步重新 wait() 建立的新 waiter（#169 卡死回归）。
+        fn clearWaiter(self: *Self, c: *xev.Completion, gen: u32) void {
+            const io = std.Io.Threaded.global_single_threaded.io();
+            self.guard.lockUncancelable(io);
+            defer self.guard.unlock(io);
+
+            if (self.waiter) |w| {
+                if (w.c == c and w.gen == gen) self.waiter = null;
+            }
+        }
+
+        fn clearWaiterCb(owner_raw: *anyopaque, c: *xev.Completion, gen: u32) void {
+            const owner: *Self = @ptrCast(@alignCast(owner_raw));
+            owner.clearWaiter(c, gen);
         }
 
         pub fn notify(self: *Self) !void {
