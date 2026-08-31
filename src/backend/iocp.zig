@@ -769,7 +769,7 @@ pub const Loop = struct {
                     1,
                     null,
                     &flags,
-                    &v.addr,
+                    &v.addr.any,
                     @as(*i32, @ptrCast(&v.addr_size)),
                     &completion.overlapped,
                     null,
@@ -1481,8 +1481,12 @@ pub const Operation = union(OperationType) {
     recvfrom: struct {
         fd: windows.HANDLE,
         buffer: ReadBuffer,
-        addr: posix.sockaddr = undefined,
-        addr_size: posix.socklen_t = @sizeOf(posix.sockaddr),
+        // 须用 net.Address（28B，含 in6）而非 posix.sockaddr（16B）：AF_INET6 socket 的
+        // WSARecvFrom 需要 28B 目标缓冲，16B 会 WSAEFAULT 同步失败 → 回调对未初始化
+        // addr 调 toIpAddress → posix.zig:71 unreachable（windowsvm scenarios direct panic 实测）。
+        // 对齐 kqueue 7bcb818 的 net.Address 尺寸。
+        addr: net.Address = undefined,
+        addr_size: posix.socklen_t = @sizeOf(net.Address),
         wsa_buffer: windows.WSABUF = undefined,
     },
 

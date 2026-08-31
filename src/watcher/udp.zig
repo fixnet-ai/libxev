@@ -151,7 +151,12 @@ fn UDPSendto(comptime xev: type) type {
                                     l_inner,
                                     c_inner,
                                     s_inner,
-                                    c_inner.op.recvfrom.addr.toIpAddress(),
+                                    // 仅 r.recvfrom 成功时解析 src 地址；错误回调里 addr 缓冲未初始化，
+                                    // 强解 family 会撞 toIpAddress 的 unreachable（windowsvm direct panic 实测）。
+                                    (if (r.recvfrom) |_|
+                                        net.Address.initPosix(@ptrCast(&c_inner.op.recvfrom.addr)).toIpAddress()
+                                    else |_|
+                                        net.Address.initIp4(.{ 0, 0, 0, 0 }, 0).toIpAddress()),
                                     initFdNonblock(c_inner.op.recvfrom.fd),
                                     c_inner.op.recvfrom.buffer,
                                     r.recvfrom,
@@ -339,7 +344,12 @@ fn UDPSendtoIOCP(comptime xev: type) type {
                                     l_inner,
                                     c_inner,
                                     s_inner,
-                                    c_inner.op.recvfrom.addr.toIpAddress(),
+                                    // 仅 r.recvfrom 成功时解析 src 地址；错误回调里 addr 缓冲未初始化，
+                                    // 强解 family 会撞 toIpAddress 的 unreachable（windowsvm direct panic 实测）。
+                                    (if (r.recvfrom) |_|
+                                        net.Address.initPosix(@ptrCast(&c_inner.op.recvfrom.addr)).toIpAddress()
+                                    else |_|
+                                        net.Address.initIp4(.{ 0, 0, 0, 0 }, 0).toIpAddress()),
                                     initFdNonblock(c_inner.op.recvfrom.fd),
                                     c_inner.op.recvfrom.buffer,
                                     r.recvfrom,
