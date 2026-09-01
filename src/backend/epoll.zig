@@ -1066,7 +1066,7 @@ pub const Completion = struct {
             .accept => |*op| .{
                 .accept = if (xev_posix.accept(
                     op.socket,
-                    &op.addr,
+                    &op.addr.any,
                     &op.addr_size,
                     op.flags,
                 )) |v|
@@ -1275,8 +1275,10 @@ pub const Operation = union(OperationType) {
 
     accept: struct {
         socket: posix.socket_t,
-        addr: posix.sockaddr = undefined,
-        addr_size: posix.socklen_t = @sizeOf(posix.sockaddr),
+        /// IPv6 需 28B(sockaddr_in6)，posix.sockaddr(16B) 会让内核 copy_to_user 越界写
+        /// （accept4 不检查用户缓冲大小）。与 recvfrom 同构修复：net.Address extern union 容纳双栈。
+        addr: net.Address = undefined,
+        addr_size: posix.socklen_t = @sizeOf(net.Address),
         flags: u32 = posix.SOCK.CLOEXEC,
     },
 
