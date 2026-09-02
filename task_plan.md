@@ -12,7 +12,9 @@
 
 ## 当前状态
 
-- 当前版本 v0.22.0 (2026-08-09) — 全项目统一版本发布，本库无代码变更。历史见 git tag。
+- 当前版本 v0.33.0 (2026-09-01 生态 tag cut) — v0.22.0 (2026-08-09) 后本库有 fixnet
+  代码变更（v0.22.0..v0.33.0 共 22 提交：IPv6 28B addr 缓冲 / IOCP AsyncIOCP UAF +
+  PQCS 合并 / readv-writev 批量 / TCP_NODELAY 等，见 git log + progress「版本同步基线」）。
 - 后端完备：kqueue(macOS/BSD) / epoll / io_uring(Linux) / IOCP(Windows) / wasi_poll。
 - 已完成：kqueue connect errno 修复、Timer 时钟更新、io_uring 同步 close、IOCP
   ConnectEx/WSA 映射/CloseHandle/stop_completion、TCP/UDP NONBLOCK initFd、EINTR 重试等。
