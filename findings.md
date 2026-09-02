@@ -35,4 +35,4 @@
 ## 跨项目指针
 
 - 使用指南（close 状态机 / deferred_free / ThreadPool 规则）→ libxev.md
-- 开放待办（IOCP UDP connect / SQ overflow / Timer 取消 / IOCP 文档）→ zigbox task_plan.md「跨项目统一待办」
+- **本仓全部待办已 08-24 CLOSE 留档（xev-1/2/3/4，定案不实施 + 依据见 zigbox task_plan.md「跨项目统一待办」libxev 段，git 5473f89）**：IOCP UDP connect（生态 UDP 走 sendto/recvfrom 零消费者）/ io_uring CQ overflow（std copy_cqes 自动捞回 overflow list 不丢 CQE，IoUring init 断言非 deinit）/ Timer 取消统一（kqueue/iocp 用户态堆 vs io_uring 内核超时为架构使然，timer.zig 已按后端分派）/ IOCP 文档。~~开放待办~~ —— 曾长期误标「→ zigbox task_plan 开放待办」致 09-02 生态审计误判为「迁移丢失」（2026-09-02 已修正）
