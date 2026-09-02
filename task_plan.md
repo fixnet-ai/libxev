@@ -1,8 +1,9 @@
 # Task Plan: libxev — 跨平台异步事件循环 (fixnet fork)
 
 > 技术定论指针 → findings.md；版本基线 → progress.md；使用指南 → libxev.md。
-> 开放待办（IOCP UDP connect / SQ overflow / Timer 取消 / IOCP 文档）已移交
-> zigbox task_plan.md「跨项目统一待办」。详细历史见 git log。
+> 08-24 已 CLOSE 留档（xev-1 IOCP UDP connect / xev-2 SQ overflow / xev-3 Timer 取消
+> / xev-4 IOCP 文档 = 定案不实施），关闭依据见 findings.md:38 + git 5473f89；本库无独立
+> 开放待办。详细历史见 git log。
 
 ## 项目定位
 
@@ -12,7 +13,7 @@
 
 ## 当前状态
 
-- 当前版本 v0.33.0 (2026-09-01 生态 tag cut) — v0.22.0 (2026-08-09) 后本库有 fixnet
+- 当前版本 v0.34.0 (2026-09-02 生态 tag cut) — v0.22.0 (2026-08-09) 后本库有 fixnet
   代码变更（v0.22.0..v0.33.0 共 22 提交：IPv6 28B addr 缓冲 / IOCP AsyncIOCP UAF +
   PQCS 合并 / readv-writev 批量 / TCP_NODELAY 等，见 git log + progress「版本同步基线」）。
 - 后端完备：kqueue(macOS/BSD) / epoll / io_uring(Linux) / IOCP(Windows) / wasi_poll。
@@ -38,4 +39,4 @@ libxev/
 
 ## 开放待办
 
-无本库独立待办；统一待办真相源 = zigbox task_plan.md「跨项目统一待办」。
+08-24 已 CLOSE 留档（xev-1 IOCP UDP connect / xev-2 SQ overflow / xev-3 Timer 取消 / xev-4 IOCP 文档 = 定案不实施），关闭依据见 findings.md:38 + git 5473f89；本库无独立开放待办。

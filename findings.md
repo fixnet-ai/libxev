@@ -1,7 +1,7 @@
 # Findings: libxev — 技术定论指针表
 
-> v0.33.0 里程碑：技术定论均已下沉源码注释（简体中文），本文件仅留指针表；
-> 正文细节见 git history 与 libxev.md；开放待办见 zigbox task_plan.md。
+> v0.34.0 里程碑：技术定论均已下沉源码注释（简体中文），本文件仅留指针表；
+> 正文细节见 git history 与 libxev.md；本仓全部待办已 08-24 CLOSE 留档（见下方「跨项目指针」）。
 
 ## 定论 → 代码注释
 
@@ -35,4 +35,5 @@
 ## 跨项目指针
 
 - 使用指南（close 状态机 / deferred_free / ThreadPool 规则）→ libxev.md
-- **本仓全部待办已 08-24 CLOSE 留档（xev-1/2/3/4，定案不实施 + 依据见 zigbox task_plan.md「跨项目统一待办」libxev 段，git 5473f89）**：IOCP UDP connect（生态 UDP 走 sendto/recvfrom 零消费者）/ io_uring CQ overflow（std copy_cqes 自动捞回 overflow list 不丢 CQE，IoUring init 断言非 deinit）/ Timer 取消统一（kqueue/iocp 用户态堆 vs io_uring 内核超时为架构使然，timer.zig 已按后端分派）/ IOCP 文档。~~开放待办~~ —— 曾长期误标「→ zigbox task_plan 开放待办」致 09-02 生态审计误判为「迁移丢失」（2026-09-02 已修正）
+- **结论（08-24 已 CLOSE 留档，定案不实施）**：xev-1 IOCP UDP connect（生态 UDP 走 sendto/recvfrom，零消费者）/ xev-2 io_uring CQ overflow（std copy_cqes 自动捞回 overflow list，CQE 不丢；IoUring init 断言非 deinit）/ xev-3 Timer 取消统一（kqueue/iocp 用户态堆 vs io_uring 内核超时 = 架构使然，timer.zig 已按后端分派）/ xev-4 IOCP 文档。
+- **依据**：CLOSE 留档 commit git 5473f89 + zigbox task_plan.md「跨项目统一待办」libxev 段。勿按「开放待办」解读——本库无独立开放待办。
