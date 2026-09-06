@@ -2,8 +2,8 @@
 
 > 技术定论指针 → findings.md；版本基线 → progress.md；使用指南 → libxev.md。
 > 08-24 已 CLOSE 留档（xev-1 IOCP UDP connect / xev-2 SQ overflow / xev-3 Timer 取消
-> / xev-4 IOCP 文档 = 定案不实施），关闭依据见 findings.md:38 + git 5473f89；本库无独立
-> 开放待办。详细历史见 git log。
+> / xev-4 IOCP 文档 = 定案不实施）；关闭依据 = 08-23 08fe943 移交 + zigbox task_plan
+> 「跨项目统一待办」libxev 段（audit #15）。本库无独立开放待办，详细历史见 git log。
 
 ## 项目定位
 
@@ -36,7 +36,3 @@ libxev/
 │   └── windows.zig             # Windows 平台特定
 └── libxev.md                   # 综合使用指南
 ```
-
-## 开放待办
-
-08-24 已 CLOSE 留档（xev-1 IOCP UDP connect / xev-2 SQ overflow / xev-3 Timer 取消 / xev-4 IOCP 文档 = 定案不实施），关闭依据见 findings.md:38 + git 5473f89；本库无独立开放待办。
