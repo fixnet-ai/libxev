@@ -952,8 +952,11 @@ pub const Loop = struct {
     // Sens an empty Completion token so that the loop wakes up if it is waiting for a completion
     // event.
     pub fn async_notify(self: *Loop, completion: *Completion) void {
-        // The completion must be in a waiting state.
-        assert(completion.op == .async_wait);
+        // 竞态防护（winx64 #92 C4）：completion 可能正处于另一线程 wait() 重挂窗口
+        // （op 瞬时非 .async_wait）。此时 AsyncIOCP.notify() 已无条件置 sticky
+        // self.wakeup，wait() 重挂后会在 guard 内消费该标志补发 PQCS——此处直接返回
+        // 不丢唤醒（sticky 兜底），避免读取未挂载 completion 的 op 触发断言。
+        if (completion.op != .async_wait) return;
 
         // The completion has been wakeup, this is used to see which completion in the async queue
         // needs to be removed.
