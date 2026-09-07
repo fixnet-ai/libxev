@@ -150,6 +150,10 @@ fn TimerLoop(comptime xev: type) type {
         ) void {
             _ = self;
 
+            // 注（not-do 定案，zigbox audit #3）：cancel 回调返回 .rearm（取消后重设）是
+            // 跨后端语义角落——epoll 侧取消处理对非 dead timer 触发 .cancel 回调、.rearm 经
+            // start() 重入 TimerHeap（epoll.zig）；kqueue/iocp 侧经 completions 派发、行为
+            // 与 epoll 不一致。无消费者证据，已定案不重开，勿依赖此路径。
             c_cancel.* = switch (xev.backend) {
                 .io_uring => .{
                     .op = .{

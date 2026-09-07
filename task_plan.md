@@ -1,9 +1,8 @@
 # Task Plan: libxev — 跨平台异步事件循环 (fixnet fork)
 
 > 技术定论指针 → findings.md；版本基线 → progress.md；使用指南 → libxev.md。
-> 08-24 已 CLOSE 留档（xev-1 IOCP UDP connect / xev-2 SQ overflow / xev-3 Timer 取消
-> / xev-4 IOCP 文档 = 定案不实施）；关闭依据 = 08-23 08fe943 移交 + zigbox task_plan
-> 「跨项目统一待办」libxev 段（audit #15）。本库无独立开放待办，详细历史见 git log。
+> xev-1..xev-4（IOCP UDP connect / SQ overflow / Timer 取消 / IOCP 文档）08-24 CLOSE
+> 留档定案不实施（详见 findings「跨项目指针」）；本库无计划中的功能待办，详细历史见 git log。
 
 ## 项目定位
 
@@ -13,12 +12,13 @@
 
 ## 当前状态
 
-- 当前版本 v0.34.0 (2026-09-02 生态 tag cut) — v0.22.0 (2026-08-09) 后本库有 fixnet
-  代码变更（v0.22.0..v0.33.0 共 22 提交：IPv6 28B addr 缓冲 / IOCP AsyncIOCP UAF +
-  PQCS 合并 / readv-writev 批量 / TCP_NODELAY 等，见 git log + progress「版本同步基线」）。
+- 当前版本 v0.37.0（79a744d, 2026-09-06 生态 tag cut；v0.35/v0.36 = 无本仓代码提交、HEAD
+  直 tag，v0.37.0 = e85719a iocp 修复 + 79a744d 文档）。版本与提交史 → progress.md
+  「版本同步基线」表 + git log。
 - 后端完备：kqueue(macOS/BSD) / epoll / io_uring(Linux) / IOCP(Windows) / wasi_poll。
-- 已完成：kqueue connect errno 修复、Timer 时钟更新、io_uring 同步 close、IOCP
-  ConnectEx/WSA 映射/CloseHandle/stop_completion、TCP/UDP NONBLOCK initFd、EINTR 重试等。
+- 历史完成项（kqueue connect errno / Timer 时钟 / io_uring 同步 close / IOCP ConnectEx-WSA
+  -CloseHandle-stop_completion / NONBLOCK initFd / EINTR 重试等）→ progress「版本同步基线」
+  v0.7.3~v0.11.0 行 + git log。
 
 ## 模块架构
 

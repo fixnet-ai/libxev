@@ -1,7 +1,8 @@
 # Findings: libxev — 技术定论指针表
 
-> v0.34.0 里程碑：技术定论均已下沉源码注释（简体中文），本文件仅留指针表；
-> 正文细节见 git history 与 libxev.md；本仓全部待办已 08-24 CLOSE 留档（见下方「跨项目指针」）。
+> v0.37.0 里程碑：技术定论均已下沉源码注释（简体中文），本文件仅留指针表；
+> 正文细节见 git history 与 libxev.md。xev-1..xev-4 于 08-24 CLOSE 留档（not-do 定案），
+> xev-5..xev-9 均已闭环（各见下方「跨项目指针」/ zigbox 统一待办 libxev 段）。
 
 ## 定论 → 代码注释
 
@@ -35,4 +36,16 @@
 ## 跨项目指针
 
 - 使用指南（close 状态机 / deferred_free / ThreadPool 规则）→ libxev.md
-- xev-1..xev-4（IOCP UDP connect / io_uring CQ overflow / Timer 取消统一 / IOCP 文档）08-24 CLOSE 留档定案不实施，见 zigbox task_plan「跨项目统一待办」libxev 段（audit #15）；关闭依据 = 08-23 08fe943 移交 commit。勿按「开放待办」解读——本库无独立开放待办。
+- xev-1..xev-4（IOCP UDP connect / io_uring CQ overflow / Timer 取消统一 / IOCP 文档）08-24 CLOSE
+  留档定案不实施：08-23 08fe943 为移交 commit（迁移至 zigbox 统一规划，非关闭记录），真正关闭记录
+  = zigbox 5473f89（08-24）；权威 = zigbox task_plan「跨项目统一待办」libxev 段（audit #15）。
+  勿按「开放待办」解读——本库无计划中的功能待办（已知休眠缺口见下「已知缺口」）。
+
+## 已知缺口（跨仓记录、本仓规划零载体）
+
+- `zig build test` c-api sizes 用例 pre-existing 失败 59/60（zigbox task_plan L410：既有
+  pre-existing，#91 前即失败）；本仓根目录无 zigtester.yaml，测试不在统一基线框架内，长期无人发现。
+  处置方向 = 修 c-api sizes 或登记豁免 + 补 zigtester.yaml（owner 未定）。
+- Linux 后端 datagram sendmsg + 带 buffer 未实现 → io_uring.zig:534 / epoll.zig:801
+  `@panic("TODO: sendmsg with buffer")`，消费者若触达即运行时 panic（kqueue.zig:1618 FreeBSD
+  wakeup @panic 同理，BSD 不在消费范围）。「定论均已下沉、无待办」不遮蔽此休眠限制。

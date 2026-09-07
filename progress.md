@@ -1,13 +1,16 @@
 # Progress Log
 
-> v0.34.0 里程碑：版本同步记录压缩为基线表；技术定论指针化（源码注释 / findings.md / git history）。
+> v0.37.0 里程碑：版本同步记录压缩为基线表；技术定论指针化（源码注释 / findings.md / git history）。
 
 ## 版本同步基线（全项目统一发布；本库除注明外无代码变更）
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
-| v0.34.0 | 2026-09-02 | 生态统一里程碑 tag（本库 v0.33.0 后仅文档同步 cf4a683/68dd4a7，无代码变更；其后 09-06 e85719a 含 iocp async_notify 代码修复（winx64 C4）） |
-| v0.33.0 | 2026-09-01 | 生态统一发布；v0.22.0..v0.33.0 含 22 个 fixnet 代码提交（IPv6 28B addr 缓冲 7f96ad7/0dfe6f2/7bcb818、IOCP AsyncIOCP UAF 8f118a7 + PQCS 合并 8747a31、readv/writev 06d0c35、TCP_NODELAY 440f056 等） |
+| v0.37.0 | 2026-09-06 | 生态 tag = 79a744d：e85719a iocp async_notify guard 修复（winx64 C4）+ 79a744d 7th 瘦身文档 |
+| v0.36.0 | 2026-09-05 | 生态 tag（无本仓代码提交，HEAD 直 tag d475768） |
+| v0.35.0 | 2026-09-05 | 生态 tag（无本仓代码提交，HEAD 直 tag d475768） |
+| v0.34.0 | 2026-09-02 | 生态 tag（本库 v0.33.0 后仅文档同步 cf4a683/68dd4a7 + d475768 header，无代码变更） |
+| v0.33.0 | 2026-09-01 | 生态统一发布；v0.22.0..v0.33.0 含 23 个 fixnet 提交（IPv6 28B addr 缓冲 7f96ad7/0dfe6f2/7bcb818、IOCP AsyncIOCP UAF 8f118a7 + PQCS 合并 8747a31、readv/writev 06d0c35、TCP_NODELAY 440f056 等；~6 条为 docs/plan） |
 | v0.22.0 | 2026-08-09 | 全项目统一版本发布 |
 | v0.16.0 | 2026-08-05 | 全项目统一版本发布 |
 | v0.13.3 | 2026-08-04 | zigoutbounds/zigbox 轻量协议物理搬迁，本库无代码变更 |
