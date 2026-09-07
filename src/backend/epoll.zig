@@ -577,11 +577,24 @@ pub const Loop = struct {
                     break :res .{ .cancel = error.ThreadPoolUnsupported };
                 }
 
+                // 自取消（carrier == target）：deferred-cleanup 惯用法——提交方
+                // 借「cancel 自身」让回调排到下一 tick 再释放对象（提交方可能
+                // 仍在栈上，绝不能同步 fire）。语义对齐 kqueue（cancellation
+                // 队列在 tick 内处理 → 回调延迟一拍）与 io_uring（内核 ENOENT
+                // → error.NotFound → 回调照常 fire）。此处置于 .adding 检查外：
+                // carrier 无目标可停，任何状态下都直接成功完成。
+                if (v.c == completion) {
+                    break :res .{ .cancel = {} };
+                }
+
                 // We stop immediately. We only stop if we are in the
                 // "adding" state because cancellation or any other action
                 // means we're complete already.
                 if (completion.flags.state == .adding) {
-                    if (v.c.op == .cancel) @panic("cannot cancel a cancellation");
+                    if (v.c.op == .cancel) {
+                        // 真 cancel-of-cancel（跨 carrier）仍是调用方编程错误。
+                        @panic("cannot cancel a cancellation");
+                    }
                     self.stop_completion(v.c);
                 }
 
@@ -1550,6 +1563,45 @@ test "epoll: default completion" {
     try loop.run(.until_done);
 
     // Completion should be dead.
+    try testing.expect(c.state() == .dead);
+}
+
+test "epoll: self-cancel (deferred cleanup) completes on next tick" {
+    const testing = std.testing;
+
+    var loop = try Loop.init(.{});
+    defer loop.deinit();
+
+    // 自取消惯用法（zo deferred-cleanup）：carrier 以 cancel 自身提交，
+    // 回调排到下一 tick 的 submission 排水 —— 提交方（可能仍持对象栈帧）
+    // 在 add() 同步段绝不 fire。回归：epoll 曾对 carrier.op == .cancel
+    // 一律 @panic，而 kqueue（cancellation 队列 tick 内处理）与 io_uring
+    // （ENOENT → error.NotFound → 回调照常）均支持此惯用法。
+    var called = false;
+    var c: Completion = undefined;
+    c = .{
+        .op = .{ .cancel = .{ .c = &c } },
+        .userdata = &called,
+        .callback = (struct {
+            fn callback(
+                ud: ?*anyopaque,
+                l: *Loop,
+                _: *Completion,
+                r: Result,
+            ) CallbackAction {
+                _ = l;
+                _ = r.cancel catch unreachable;
+                const ptr: *bool = @ptrCast(@alignCast(ud.?));
+                ptr.* = true;
+                return .disarm;
+            }
+        }).callback,
+    };
+    loop.add(&c);
+    try testing.expect(!called); // add() 同步段不 fire
+
+    try loop.run(.until_done);
+    try testing.expect(called);
     try testing.expect(c.state() == .dead);
 }
 
