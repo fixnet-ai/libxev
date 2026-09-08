@@ -204,18 +204,30 @@ pub const Loop = struct {
     }
 
     /// Delete a completion from the loop.
-    pub fn delete(self: *Loop, completion: *Completion) void {
+    ///
+    /// Returns true when the completion was removed from its pending wait
+    /// and will never be invoked again — ownership of any callback context
+    /// returns to the caller (safe to free). Returns false when the
+    /// completion already fired, was consumed, or isn't trackable: the
+    /// callback chain still owns its context.
+    pub fn delete(self: *Loop, completion: *Completion) bool {
         switch (completion.flags.state) {
-            // Already deleted
-            .deleting => return,
+            // Already deleted / never armed / already consumed.
+            .deleting, .dead, .adding => return false,
 
-            // If we're active then we will stop it and remove from epoll.
-            // If we're adding then we'll ignore it when adding.
-            .dead, .active, .adding => {},
+            // Active: remove from epoll (deferred, drained before the next
+            // epoll_wait so no further callback can fire).
+            .active => {},
         }
+
+        // Note: no result-queue check needed here (unlike kqueue/iocp) —
+        // this backend consumes results synchronously during event
+        // processing, so an active completion is always a live wait.
+
         completion.flags.state = .deleting;
 
         self.deletions.push(completion);
+        return true;
     }
 
     /// Returns the "loop" time in milliseconds. The loop time is updated
@@ -507,7 +519,20 @@ pub const Loop = struct {
                                 linux.EPOLL.CTL_DEL,
                                 v,
                                 null,
-                            ) catch unreachable;
+                            ) catch |err| switch (err) {
+                                // POSIX close(fd) implicitly removes the fd
+                                // from any epoll set. If the user closed the fd
+                                // (e.g. from within a callback earlier in this
+                                // loop, or from another thread), this DEL is
+                                // ENOENT — the disarm goal is already achieved.
+                                // Tolerate instead of panicking.
+                                // Observed (fixnet zigbox S14): mass peer
+                                // disconnects on Android -> user closes socket
+                                // while a completion is in flight -> completion
+                                // fires, returns .disarm -> DEL ENOENT.
+                                error.FileDescriptorNotRegistered => {},
+                                else => unreachable,
+                            };
 
                             if (close_dup) {
                                 xev_posix.close(v);
@@ -932,7 +957,10 @@ pub const Loop = struct {
     }
 
     fn stop_completion(self: *Loop, completion: *Completion) void {
-        // Delete. This should never fail.
+        // Delete. Fails only when the fd was already closed by the user
+        // (POSIX close implicitly deregisters from epoll) — in that case
+        // the registration is already gone and deletion is a no-op.
+        // Same rationale as the disarm path in tick().
         const maybe_fd = if (completion.flags.dup) completion.flags.dup_fd else completion.fd();
         if (maybe_fd) |fd| {
             epoll_helper.epoll_ctl(
@@ -940,7 +968,10 @@ pub const Loop = struct {
                 linux.EPOLL.CTL_DEL,
                 fd,
                 null,
-            ) catch unreachable;
+            ) catch |err| switch (err) {
+                error.FileDescriptorNotRegistered => {},
+                else => unreachable,
+            };
         } else switch (completion.op) {
             .timer => |*v| {
                 const c = v.c;

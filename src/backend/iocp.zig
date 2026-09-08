@@ -146,6 +146,46 @@ pub const Loop = struct {
         self.submissions.push(completion);
     }
 
+    /// Delete a completion from the loop.
+    ///
+    /// Returns true when the completion was removed from its pending wait
+    /// and will never be invoked again — ownership of any callback context
+    /// returns to the caller (safe to free). Returns false when the
+    /// completion already fired, was consumed, or isn't trackable: the
+    /// callback chain still owns its context.
+    ///
+    /// Note IOCP has no kernel registration table: an armed wait is a pure
+    /// in-memory waiter, so deletion is bookkeeping only (no syscall).
+    pub fn delete(self: *Loop, completion: *Completion) bool {
+        switch (completion.flags.state) {
+            // Already deleted / already consumed.
+            .deleting, .dead => return false,
+
+            // Queued but not yet submitted: mark dead so submit() stops
+            // it. No callback will ever fire — ownership returns to caller.
+            .adding => {
+                completion.flags.state = .dead;
+                return true;
+            },
+
+            // Active: stop it.
+            .active => {},
+        }
+
+        // Completed and queued for its final callback invocation: the
+        // callback chain owns cleanup.
+        if (completion.result != null) return false;
+
+        if (completion.op == .async_wait) {
+            var unused: CancelError!void = {};
+            self.stop_completion(completion, &unused);
+            completion.flags.state = .dead;
+            return true;
+        }
+
+        return false;
+    }
+
     /// Submit any enqueued completions. This does not fire any callbacks for completed events
     /// (success or error). Callbacks are only fired on the next tick.
     pub fn submit(self: *Loop) !void {

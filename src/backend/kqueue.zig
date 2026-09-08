@@ -182,6 +182,57 @@ pub const Loop = struct {
         self.submissions.push(completion);
     }
 
+    /// Delete a completion from the loop.
+    ///
+    /// NOTE (kqueue-specific): every cancellation here — .adding rerouted
+    /// to .deleting, or an .active registration deleted via the submission
+    /// queue — still fires the callback EXACTLY ONCE with a CANCELED result
+    /// (submit() routes .deleting through the completions queue, and .dead
+    /// through stop_completion()). The callback chain therefore always owns
+    /// context cleanup, so this backend only returns true when no callback
+    /// is pending at all. Callers must handle a trailing CANCELED callback
+    /// before freeing their context when this returns false.
+    pub fn delete(self: *Loop, completion: *Completion) bool {
+        switch (completion.flags.state) {
+            // Already being deleted / consumed: any scheduled callback is
+            // already owned by the callback chain.
+            .deleting, .dead => return false,
+
+            // Queued but not yet submitted: reroute to .deleting so submit()
+            // converts it into a CANCELED callback + no-op EV_DELETE instead
+            // of registering it. Returning false hands ownership to that
+            // callback chain.
+            .adding => {
+                completion.flags.state = .deleting;
+                return false;
+            },
+
+            // Active: remove from kqueue below.
+            .active => {},
+        }
+
+        // Completed and queued for its final callback invocation: the
+        // callback chain owns cleanup.
+        if (completion.result != null) return false;
+
+        if (completion.kevent() != null) {
+            // Remove the kevent via the submission queue (same syscall batch
+            // as regular submissions). The .deleting state makes submit()
+            // queue a CANCELED callback (completions) alongside the EV_DELETE
+            // changelist entry — so the callback still fires once: return
+            // false, the callback chain owns cleanup.
+            self.active -= 1;
+            completion.flags.state = .deleting;
+            self.submissions.push(completion);
+            return false;
+        }
+
+        // Not trackable (no kevent representation, e.g. heap timers): the
+        // callback may still fire from its own bookkeeping — callback chain
+        // owns cleanup.
+        return false;
+    }
+
     /// Submit any enqueue completions. This does not fire any callbacks
     /// for completed events (success or error). Callbacks are only fired
     /// on the next tick.
