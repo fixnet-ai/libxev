@@ -361,6 +361,20 @@ pub const Loop = struct {
         self.add_(completion, false);
     }
 
+    /// Remove a completion from the loop（S16 delete 契约的 io_uring 补全）。
+    /// io_uring 无法从内核撤回已提交的 SQE（CQE 必然到来一次），也无法
+    /// 区分「submissions FIFO 未 flush」与「已提交内核」（state 同为
+    /// .active），故对齐 kqueue 语义恒返回 false：回调链拥有清理。调用方
+    /// （zf tunconn reclaimPending*）在 false 分支配合 abandon
+    /// （op.owner_alive=false）保证 CQE 到来时 onWake 只销毁 op 自身、
+    /// 不 touch 已释放宿主（S19）；close 路径则依赖 close 内 notify() 的
+    /// 一次假唤醒以 EOF 终结（conn 已关读得 0）。
+    pub fn delete(self: *Loop, c: *Completion) bool {
+        _ = self;
+        _ = c;
+        return false;
+    }
+
     /// Internal add function. The only difference is try_submit. If try_submit
     /// is true, then this function will attempt to submit the queue to the
     /// ring if the submission queue is full rather than filling up our FIFO.
