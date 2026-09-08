@@ -224,6 +224,24 @@ pub const Loop = struct {
         // this backend consumes results synchronously during event
         // processing, so an active completion is always a live wait.
 
+        // S20：fd 注册改为同步摘除。此前的延迟摘除（deletions 队列下轮 tick
+        // 收尾）有两处违反「返回 true = 永无回调」契约：
+        // ① 若本 completion 的事件已在本轮 epoll_wait 批次内，收尾前的同批
+        //    派发会回调已被回收方销毁的上下文 → UAF（Android S20 SIGBUS/
+        //    BUS_ADRALN 实证：onWake 读已销毁 ReadOp → TcpConn vtable 垃圾 PC）。
+        // ② 回收方凭 true 同步释放 completion 宿主结构后，下轮 drain 读已释放
+        //    内存；且 drain 时 state 已是 .deleting，stop_completion 的
+        //    .active 判断漏减 active 计数（ until_done 退出语义慢性失血）。
+        // timer/cancel 无 fd 可摘，保留延迟路径（其 active 计数语义在
+        // stop_completion 的 timer 分支内部，不可在此重复减）。
+        const maybe_fd = if (completion.flags.dup) completion.flags.dup_fd else completion.fd();
+        if (maybe_fd != null) {
+            completion.flags.state = .dead;
+            self.stop_completion(completion);
+            self.active -= 1; // stop_completion 只减 .active，此处已置 .dead
+            return true;
+        }
+
         completion.flags.state = .deleting;
 
         self.deletions.push(completion);
@@ -500,6 +518,13 @@ pub const Loop = struct {
                 }
 
                 const c: *Completion = @ptrFromInt(@as(usize, @intCast(ev.data.ptr)));
+
+                // S20：本批更早的回调可能已 delete() 本 completion（fd 同步摘除
+                // 后 state=.dead），回收方凭 delete()==true 契约同步销毁了回调
+                // 上下文——再派发即 UAF。非 .active 一律跳过（.dead=已删除/已
+                // 消费、.adding=重登待下轮 start、.deleting=延迟摘除）；level-
+                // triggered 注册保证跳过的活事件下轮重新上报，不丢失。
+                if (c.flags.state != .active) continue;
 
                 // We get the fd and mark this as in progress we can properly
                 // clean this up late.r
@@ -2293,4 +2318,95 @@ test "epoll: canceling a completed operation" {
     try loop.run(.until_done);
     try testing.expect(called);
     try testing.expect(trigger.? == .expiration);
+}
+
+/// 测试用 eventfd（0.16 移除了 std.posix.eventfd，走裸 syscall 层）。
+fn testEventfd() !posix.fd_t {
+    const rc = linux.eventfd(0, linux.EFD.CLOEXEC | linux.EFD.NONBLOCK);
+    switch (linux.errno(rc)) {
+        .SUCCESS => return @intCast(rc),
+        else => return error.Unexpected,
+    }
+}
+
+test "epoll: completion deleted by an earlier callback in the same batch is never dispatched" {
+    const testing = std.testing;
+
+    var loop = try Loop.init(.{});
+    defer loop.deinit();
+
+    // S20 回归（Android SIGBUS/BUS_ADRALN 实证）：同一 epoll_wait 批次内，
+    // 先派发的回调 delete() 另一个 completion，回收方凭「true = 永无回调」
+    // 契约同步销毁其回调上下文。旧实现的 delete() 仅入 deletions 队列延迟
+    // 摘除，同批后续派发无状态防护 → 已删 completion 照常回调，踩已销毁
+    // 上下文。两个 eventfd 先写满再一并 poll，保证同一批 epoll_wait 返回
+    // 两个就绪事件；批内顺序由内核决定，断言对两种顺序均成立。
+    const Ctx = struct {
+        evfd: posix.fd_t,
+        c: Completion = undefined,
+        peer: ?*@This() = null,
+        loop: *Loop = undefined,
+        deleted_peer: bool = false,
+        ran_after_freed: bool = false,
+        freed: bool = false,
+
+        fn onPoll(
+            ud: ?*anyopaque,
+            l: *Loop,
+            c_inner: *Completion,
+            r: Result,
+        ) CallbackAction {
+            _ = c_inner;
+            _ = r.poll catch unreachable;
+            const ctx: *@This() = @ptrCast(@alignCast(ud.?));
+            // UAF 探针：真实场景此处上下文已被回收方销毁（悬空读），测试
+            // 以标志位记录「delete()==true 之后仍被派发」这一契约违反。
+            if (ctx.freed) {
+                ctx.ran_after_freed = true;
+                return .disarm;
+            }
+            // 先派发者：删除对端并模拟回收方同步销毁其回调上下文
+            //（delete 返回 true = 对端永不再回调）。
+            if (ctx.peer) |p| {
+                ctx.deleted_peer = l.delete(&p.c);
+                p.freed = true;
+            }
+            return .disarm;
+        }
+
+        fn arm(self: *@This()) void {
+            self.c = .{
+                .op = .{ .poll = .{ .fd = self.evfd, .events = linux.EPOLL.IN } },
+                .userdata = self,
+                .callback = onPoll,
+            };
+            self.loop.add(&self.c);
+        }
+    };
+
+    var a: Ctx = .{ .evfd = try testEventfd(), .loop = &loop };
+    defer xev_posix.close(a.evfd);
+    var b: Ctx = .{ .evfd = try testEventfd(), .loop = &loop };
+    defer xev_posix.close(b.evfd);
+    a.peer = &b;
+    b.peer = &a;
+
+    a.arm();
+    b.arm();
+
+    // 两个 eventfd 均置就绪 → 下一次 epoll_wait 同批上报
+    const one: u64 = 1;
+    _ = try xev_posix.write(a.evfd, std.mem.asBytes(&one));
+    _ = try xev_posix.write(b.evfd, std.mem.asBytes(&one));
+
+    try loop.run(.until_done);
+
+    // 契约：delete()==true 之后被删者绝不再被派发（无论批内顺序）
+    try testing.expect(!a.ran_after_freed);
+    try testing.expect(!b.ran_after_freed);
+    // 恰有一方（批内先派发者）执行了删除
+    try testing.expect(a.deleted_peer != b.deleted_peer);
+    // 被删一方同步摘除后落在 .dead
+    const deleted = if (a.deleted_peer) &b else &a;
+    try testing.expect(deleted.c.state() == .dead);
 }
