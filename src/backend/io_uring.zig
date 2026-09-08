@@ -62,6 +62,20 @@ pub const Loop = struct {
     /// （见 findings，kqueue/epoll/iocp 同款修复）。
     cqes: [128]linux.io_uring_cqe = undefined,
 
+    /// 保底唤醒 timer（1s TIMEOUT SQE，哨兵 user_data=0）。io_uring 的
+    /// enter(GETEVENTS) 无超时语义：若在途操作全部长期静默（超长 idle timer、
+    /// 对端不再回包的 POLL/RECV），submit_and_wait 将无限期阻塞，run(.once)
+    /// 不返回，上层 worker 的周期职责（队列清理/会话回收/超时管理）全部停摆
+    /// ——kqueue/epoll 后端的等待上限是用户态 timer 堆最近到期时刻，天生无此
+    /// 问题（2026-09 linuxvm 取证发现的结构性缺陷；注意 VT13-16 场景超时真因
+    /// 是 VM 时钟漂移致 ss2022/vmess 时间戳校验拒服务，与本缺陷无关）。
+    /// 此 SQE 每秒到期一次产生 CQE，保证等待最坏 1s 必醒。
+    /// 仅在其他操作在途时 arm（见 tick_），否则 until_done 模式无法退出。
+    /// 不占用 Completion 实例（Loop 结构保持精简）：SQE 的 user_data 用
+    /// 哨兵 0（合法 Completion 指针非零），timespec 存 Loop 内。
+    wakeup_ts: linux.kernel_timespec = .{ .sec = 0, .nsec = 0 },
+    wakeup_armed: bool = false,
+
     /// Initialize the event loop. "entries" is the maximum number of
     /// submissions that can be queued at one time. The number of completions
     /// always matches the number of entries so the memory allocated will be
@@ -170,6 +184,23 @@ pub const Loop = struct {
 
             if (self.active == 0 and self.submissions.empty()) break;
 
+            // 保底唤醒 timer：仅在其他操作在途时 arm（active 含保底自身）。
+            // 若常驻 arm，until_done 模式靠 active==0 退出的语义会被破坏。
+            // 手动 prep SQE（哨兵 user_data=0）不走 Completion，SQE 满则放弃
+            // 本轮 arm（submit flush 腾位后下轮重试）。
+            const others = self.active - @intFromBool(self.wakeup_armed);
+            if (others > 0 and !self.wakeup_armed) {
+                var ts: linux.timespec = undefined;
+                _ = linux.clock_gettime(linux.CLOCK.MONOTONIC, &ts);
+                self.wakeup_ts = .{ .sec = ts.sec + 1, .nsec = ts.nsec };
+                if (self.ring.get_sqe()) |sqe| {
+                    sqe.prep_timeout(&self.wakeup_ts, 0, linux.IORING_TIMEOUT_ABS);
+                    sqe.user_data = 0;
+                    self.active += 1;
+                    self.wakeup_armed = true;
+                } else |_| {}
+            }
+
             // If we have no queued submissions then we do the wait as part
             // of the submit call, because then we can do exactly once syscall
             // to get all our events.
@@ -196,6 +227,15 @@ pub const Loop = struct {
             };
 
             for (self.cqes[0..count]) |cqe| {
+                // 保底唤醒 timer（哨兵 user_data=0，合法 Completion 指针非零
+                // 不会冲突）：收割即解除 armed 标记（下轮 tick 视在途情况重新
+                // arm），不进用户回调。res 无需检查——无论正常到期还是被取消/
+                // 出错，目的只是周期唤醒。
+                if (cqe.user_data == 0) {
+                    self.active -= 1;
+                    self.wakeup_armed = false;
+                    continue;
+                }
                 const c = @as(?*Completion, @ptrFromInt(@as(usize, @intCast(cqe.user_data)))) orelse continue;
                 self.active -= 1;
                 c.flags.state = .dead;
