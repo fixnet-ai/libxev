@@ -348,8 +348,10 @@ test "c-api sizes" {
     // is maintained.
     //
     // THE MAGIC NUMBERS ARE KEPT IN SYNC WITH "include/xev.h"
+    // Loop bound raised from 512 alongside XEV_SIZEOF_LOOP: backend event
+    // buffers live in the Loop struct since fdefdc8 (0xaa memset avoidance).
     const testing = std.testing;
-    try testing.expect(@sizeOf(xev.Loop) <= 512);
+    try testing.expect(@sizeOf(xev.Loop) <= 16384);
     try testing.expect(@sizeOf(Completion) <= 320);
     try testing.expect(@sizeOf(xev.Async) <= 256);
     try testing.expect(@sizeOf(xev.Timer) <= 256);

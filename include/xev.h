@@ -11,7 +11,12 @@ extern "C" {
 /* TODO(mitchellh): we should use platform detection to set the correct
  * byte sizes here. We choose some overly large values for now so that
  * we can retain ABI compatibility. */
-const size_t XEV_SIZEOF_LOOP = 512;
+// Raised from 512: the backend event-completion buffers were moved into the
+// Loop struct (commit fdefdc8, avoids the per-tick 0xaa memset of undefined
+// stack arrays in ReleaseSafe), which sizes Loop at several KiB. C consumers
+// allocate storage of this size, so the constant must stay in sync with the
+// test bound in src/c_api.zig.
+const size_t XEV_SIZEOF_LOOP = 16384;
 const size_t XEV_SIZEOF_COMPLETION = 320;
 const size_t XEV_SIZEOF_WATCHER = 256;
 const size_t XEV_SIZEOF_THREADPOOL = 64;
