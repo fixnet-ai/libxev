@@ -158,8 +158,11 @@ pub const Loop = struct {
     /// in-memory waiter, so deletion is bookkeeping only (no syscall).
     pub fn delete(self: *Loop, completion: *Completion) bool {
         switch (completion.flags.state) {
-            // Already deleted / already consumed.
-            .deleting, .dead => return false,
+            // Already deleted / already consumed. (.deleting 不存在于此枚举：
+            // epoll/kqueue 经 deletion queue 两阶段删除才有该状态，iocp 删除
+            // 是纯内存 bookkeeping、同步完成——7f1ecbe 统一 delete() 时从
+            // epoll 抄本 switch 漏删该引用，交叉编译 Windows 即报错。)
+            .dead => return false,
 
             // Queued but not yet submitted: mark dead so submit() stops
             // it. No callback will ever fire — ownership returns to caller.
