@@ -287,10 +287,10 @@ pub const Loop = struct {
                         c.flags.state = .dead;
                         self.completions.push(c);
 
-                        self.events[events_len] = ev;
-                        self.events[events_len].flags = std.c.EV.DELETE;
-                        events_len += 1;
-                        if (events_len >= self.events.len) break :queue_pop;
+                        // fd 复用竞态防护：同步提交（见 syncDelete 注释），
+                        // 且必须先于本批后续 EV_ADD 生效（cancel 的 fd 即将
+                        // close，复用后新 ADD 不能被本 DEL 追杀）。
+                        self.syncDelete(ev);
                     },
 
                     // This is set if the completion was canceled while in the
@@ -394,6 +394,25 @@ pub const Loop = struct {
             .once => try self.tick(1),
             .until_done => while (!self.done()) try self.tick(1),
         }
+    }
+
+    /// fd 复用竞态防护（2026-09-13 macOS 实锚）：EV_DELETE 一律同步提交。
+    ///
+    /// 延迟批量 DEL（changes 数组随下一轮 kevent 提交）存在竞态窗口：
+    /// fd close → 内核自动摘除 knote → 新 socket 复用同一 fd 号 → 新
+    /// EV_ADD 注册 → 旧 DEL 迟到按 (ident,filter) 误删新 knote → connect
+    /// 的 WRITE 完成事件永久丢失（TUN 全系统流量下 fd 高速复用必触发；
+    /// 实测 97% connect 回调丢失 → 客户端重试风暴 → 临时端口耗尽 →
+    /// EADDRNOTAVAIL 风暴，移动端「baidu/google 间歇不通」同根因）。
+    ///
+    /// 同步提交保证 DEL 在本 knote 生命周期内立即生效：fd 尚未 close 时
+    /// 删除本 knote；fd 已 close 时内核已自动摘除，ENOENT 无害吞掉。
+    /// DEL 为连接级操作（非包级），syscall 增量可忽略。
+    fn syncDelete(self: *Loop, ev: Kevent) void {
+        var del = ev;
+        del.flags = std.c.EV.DELETE;
+        del.udata = 0;
+        _ = kevent_syscall(self.kqueue_fd, &[1]Kevent{del}, &[_]Kevent{}, null) catch {};
     }
 
     /// Tick through the event loop once, waiting for at least "wait" completions
@@ -534,13 +553,9 @@ pub const Loop = struct {
                     // If we're active we have to schedule a delete. Otherwise
                     // we do nothing because we were never part of the kqueue.
                     .disarm => {
-                        if (disarm_ev) |ev| {
-                            self.events[changes] = ev;
-                            self.events[changes].flags = std.c.EV.DELETE;
-                            self.events[changes].udata = 0;
-                            changes += 1;
-                            assert(changes <= self.events.len);
-                        }
+                        // fd 复用竞态防护：同步提交（见 syncDelete 注释），
+                        // 不再进 changes 延迟批量队列。
+                        if (disarm_ev) |ev| self.syncDelete(ev);
 
                         if (c_active) self.active -= 1;
                     },
@@ -652,13 +667,9 @@ pub const Loop = struct {
                 const action = c.callback(c.userdata, self, c, result);
                 switch (action) {
                     .disarm => {
-                        // Mark this event for deletion, it'll happen
-                        // on the next tick.
-                        self.events[changes] = ev;
-                        self.events[changes].flags = std.c.EV.DELETE;
-                        self.events[changes].udata = 0;
-                        changes += 1;
-                        assert(changes <= self.events.len);
+                        // fd 复用竞态防护：同步提交（见 syncDelete 注释），
+                        // 不再延迟到下一 tick。
+                        self.syncDelete(ev);
 
                         self.active -= 1;
                     },
