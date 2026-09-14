@@ -113,6 +113,18 @@ pub fn build(b: *std.Build) !void {
     const benchmarks = try buildBenchmarks(b, target);
     const examples = try buildExamples(b, target, optimize, static_lib);
 
+    // Async 生命周期压测轮数（09-14）：默认 2000 常跑（毫秒级，作为持续覆盖）；
+    // VM/真机暴力压测用 `-Dsoak=<大值>` 放大。走 build option 而非环境变量 ——
+    // 0.16 无跨平台取环境变量 API（std.posix.getenv 已移除），且 build option 可被
+    // VM/CI 脚本显式参数化、可归档复现。
+    const soak_iters = b.option(
+        usize,
+        "soak",
+        "Async soak iterations for the completion-lifecycle stress test",
+    ) orelse 2000;
+    const build_options = b.addOptions();
+    build_options.addOption(usize, "soak_iters", soak_iters);
+
     // Test Executable
     const test_exe: *Step.Compile = test_exe: {
         const test_filter = b.option(
@@ -130,6 +142,9 @@ pub fn build(b: *std.Build) !void {
                 .link_libc = switch (target.result.os.tag) {
                     .linux, .macos => true,
                     else => null,
+                },
+                .imports = &.{
+                    .{ .name = "build_options", .module = build_options.createModule() },
                 },
             }),
         });

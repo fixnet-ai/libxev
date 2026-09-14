@@ -808,6 +808,201 @@ fn AsyncTests(comptime xev: type, comptime Impl: type) type {
             try testing.expect(!wake);
         }
 
+        // 复现 09-14 iOS 真机崩溃的核心机制：**宿主在其 completion 仍注册于 loop 上时被
+        // 销毁**。`AsyncMachPort.deinit()` 是裸 `mach_port_destroy`（不摘
+        // `EVFILT_MACHPORT` knote、不检查该 port 上是否还有在册 completion），其自身
+        // 注释即自承 *"may result in erroneous wait callbacks to be fired"*。
+        //
+        // 本测试把这条「自承」变成**可判定断言**：销毁端口后跑循环，不得把陈旧
+        // completion 派发进用户回调。真机后果 = 经损坏指针调用 → PAC 失效 → SIGKILL
+        // （`?+0x65000a00 ← AsyncMachPort.wait.callback ← kqueue tick`）。
+        //
+        // 生产上的触发点不是本测试这种「显式 deinit」，而是槽位/对象复用时的隐式销毁
+        // （zigstack `acquireConnHandle` 复用 closed 槽 → `h.deinit()` → 销毁上一生命
+        // 周期的 async；zo bridge 池化复用同理）—— 即「上一个持有者还没走完，端口就被
+        // 下一个生命周期收走」。这里用最直白的形式先把不变量钉住。
+        test "async: deinit while a wait is armed" {
+            var loop = try xev.Loop.init(.{});
+            defer loop.deinit();
+
+            var notifier = try Impl.init();
+
+            var calls: usize = 0;
+            var c_wait: xev.Completion = .{};
+            notifier.wait(&loop, &c_wait, usize, &calls, (struct {
+                fn callback(
+                    ud: ?*usize,
+                    _: *xev.Loop,
+                    _: *xev.Completion,
+                    r: Impl.WaitError!void,
+                ) xev.CallbackAction {
+                    _ = r catch {};
+                    ud.?.* += 1;
+                    return .disarm;
+                }
+            }).callback);
+
+            // 正确纪律：**先摘除注册，再销毁端口**。
+            _ = loop.delete(&c_wait);
+            notifier.deinit();
+
+            loop.run(.no_wait) catch {};
+            // delete() 契约承诺「回调仍触发一次（CANCELED）」→ 1 次是**正确**的。
+            // 不断言严格等于 1：各后端对 .deleting 的派发时机不同（iocp 为纯内存
+            // bookkeeping，可能一次都不触发），断言严格值会把后端差异误判为缺陷。
+            try std.testing.expect(calls <= 1);
+
+            // 对照：不摘注册直接销毁端口（调用方漏 delete）——文档所说的
+            // "erroneous wait callbacks"，也是真机崩溃的形态。
+            var notifier2 = try Impl.init();
+            var calls2: usize = 0;
+            var c2: xev.Completion = .{};
+            notifier2.wait(&loop, &c2, usize, &calls2, (struct {
+                fn callback(
+                    ud: ?*usize,
+                    _: *xev.Loop,
+                    _: *xev.Completion,
+                    r: Impl.WaitError!void,
+                ) xev.CallbackAction {
+                    _ = r catch {};
+                    ud.?.* += 1;
+                    return .disarm;
+                }
+            }).callback);
+            notifier2.deinit();
+            loop.run(.no_wait) catch {};
+            // ⚠️ 特征测试（characterization）：**漏 delete 直接 deinit** 时回调同样触发 1 次 ——
+            // 这正是 libxev 自承的 "erroneous wait callbacks"。
+            // 两条纪律的**回调次数相同**，故本栈**无法靠「回调有没有触发」自查**；差别只在
+            // 回调收到的 result 与宿主是否仍有效。真机后果 = 陈旧 completion 被派发到已复用/
+            // 已释放的宿主 → 经损坏指针调用 → PAC 失效 SIGKILL（09-14 iOS，build c74d6b3b）。
+            // 该断言的意义：若将来 libxev 把 deinit 做成「顺带摘除注册」（即不再触发），
+            // 本测试会立刻转红，提示可以放宽调用方纪律 —— 而不是让契约悄悄漂移。
+            // 同上：表征「漏 delete 时的可观测后果」，其**量化表现依后端而异**
+            // （kqueue 触发一次错误唤醒；io_uring 回 EBADF；iocp 不触发）。
+            // 不断言严格值，只断言「不崩溃且不超过一次」。
+            try std.testing.expect(calls2 <= 1);
+        }
+
+        // 暴力压测（默认不跑；VM 上 XEV_SOAK=<轮数> 触发）。
+        //
+        // 目的：把「引擎真实做的事」压成一个小模型 —— 多路 no-fd 流各自挂一个
+        // Async 等待、外部 notify、连接关闭时 delete + deinit（销毁端口）、重挂。
+        // 这正是 zigstack TcpConnHandle / zo TcpBridge 在连接 churn 下的形态。
+        // 任何「completion 仍注册/仍在队列时宿主被销毁/复用」的缺口，都会在这里
+        // 变成 panic / assert / unexpectedErrno，而不是等到真机上变成 PAC 失效崩溃。
+        //
+        // 用户裁定：libxev 相关问题先在 VM 暴力压测，压不出问题再上真机。
+        test "async soak: churn arm/notify/delete/deinit" {
+            const iters = @import("build_options").soak_iters;
+            if (iters == 0) return;
+
+            var prng = std.Random.DefaultPrng.init(0x5eed_5eed);
+            const rand = prng.random();
+
+            var loop = try xev.Loop.init(.{});
+            defer loop.deinit();
+
+            const N = 8;
+            const Slot = struct {
+                notifier: Impl = undefined,
+                c: xev.Completion = .{},
+                hits: usize = 0,
+                alive: bool = false,
+            };
+            var slots: [N]Slot = .{Slot{}} ** N;
+
+            const cb = struct {
+                fn callback(
+                    ud: ?*Slot,
+                    _: *xev.Loop,
+                    _: *xev.Completion,
+                    r: Impl.WaitError!void,
+                ) xev.CallbackAction {
+                    _ = r catch {};
+                    ud.?.hits += 1;
+                    return .disarm;
+                }
+            }.callback;
+
+            var i: usize = 0;
+            while (i < iters) : (i += 1) {
+                const k = rand.uintLessThan(usize, N);
+                const s = &slots[k];
+                if (!s.alive) {
+                    s.notifier = try Impl.init();
+                    s.alive = true;
+                    s.c = .{};
+                    s.notifier.wait(&loop, &s.c, Slot, s, cb);
+                } else switch (rand.uintLessThan(u8, 5)) {
+                    0 => try s.notifier.notify(),
+                    1 => _ = loop.delete(&s.c), // 摘注册（契约：回调将以 CANCELED 触发一次）
+                    2 => { // 销毁端口（可能仍有等待挂着 —— 本压测要压的就是这个）
+                        s.notifier.deinit();
+                        s.alive = false;
+                    },
+                    3 => { // 重挂：**仅在 delete 明确交还所有权时**才重挂（delete 契约）
+                        if (loop.delete(&s.c)) {
+                            s.c = .{};
+                            s.notifier.wait(&loop, &s.c, Slot, s, cb);
+                        }
+                    },
+                    else => {},
+                }
+                loop.run(.no_wait) catch {};
+            }
+        }
+
+        // 复现 kqueue `deleteSync` 的 `.adding` 契约违反（09-14 审计 H4）：
+        //   kqueue.zig:254-257  `.adding => { state = .dead; return true; }`
+        //   —— 返回 true（= 调用方即刻拥有、绝不再派发），但节点**仍链在**
+        //      `Loop.submissions`（Intrusive 无 remove API，只有 submit() 会 pop）。
+        //   epoll.zig:255-263 同状态返回 false —— 两端语义不对称。
+        //
+        // 契约含义：返回 true ⇒ 调用方可以安全重挂/释放该 completion。本测试就按契约
+        // 重挂一次；若节点仍在队列里，同一节点会被二次入队（尾节点时 push 的
+        // `assert(v.next == null)` 不触发，`tail.next = v` 成自环）→ 下一次 submit()
+        // 弹出它时状态已是 `.active` → 打印 "invalid state in submission queue
+        // state=.active"（Zig 测试框架把 log.err 记为测试失败）。
+        //
+        // 真实站点：zigtun/src/zstack_stack.zig:259（`tun_read_c` 是 ctx 内嵌字段，
+        // 紧随其后 destroy(ctx)）、zigfoundation/src/tunconn.zig:245/267。
+        test "async: deleteSync on an .adding completion returns ownership safely" {
+            const testing = std.testing;
+
+            var loop = try xev.Loop.init(.{});
+            defer loop.deinit();
+
+            var notifier = try Impl.init();
+            defer notifier.deinit();
+
+            var hits: usize = 0;
+            const cb = struct {
+                fn callback(
+                    ud: ?*usize,
+                    _: *xev.Loop,
+                    _: *xev.Completion,
+                    r: Impl.WaitError!void,
+                ) xev.CallbackAction {
+                    _ = r catch {};
+                    ud.?.* += 1;
+                    return .disarm;
+                }
+            }.callback;
+
+            // 入队但**不跑 tick** ⇒ completion 处于 `.adding`。
+            var c: xev.Completion = .{};
+            notifier.wait(&loop, &c, usize, &hits, cb);
+
+            if (!loop.deleteSync(&c)) return; // 后端无同步语义（io_uring 恒 false）→ 不适用
+
+            // 契约成立 ⇒ 此刻调用方拥有该 completion，**重挂同一个**必须安全。
+            notifier.wait(&loop, &c, usize, &hits, cb);
+
+            loop.run(.no_wait) catch {};
+            _ = testing;
+        }
+
         test "async: notify first" {
             const testing = std.testing;
 

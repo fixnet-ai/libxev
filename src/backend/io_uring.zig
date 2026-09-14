@@ -428,6 +428,15 @@ pub const Loop = struct {
         return false;
     }
 
+    /// 同步删除变体（契约见 kqueue 同名前注释）：io_uring 无法从内核撤回已提交
+    /// 的 SQE（CQE 必达一次），故无同步语义 → 恒返回 false：回调链拥有清理权，
+    /// 调用方必须保留 completion 内存（与 delete() 一致 = 既有安全语义）。
+    pub fn deleteSync(self: *Loop, c: *Completion) bool {
+        _ = self;
+        _ = c;
+        return false;
+    }
+
     /// Internal add function. The only difference is try_submit. If try_submit
     /// is true, then this function will attempt to submit the queue to the
     /// ring if the submission queue is full rather than filling up our FIFO.
@@ -799,6 +808,15 @@ pub const Completion = struct {
 
             .poll => .{
                 .poll = if (res >= 0) {} else switch (@as(posix.E, @enumFromInt(-res))) {
+                    // 09-14（VM 暴力压测实证）：被轮询的 fd 消失并**不意外** —— 最典型的是
+                    // 宿主 Async 被销毁（`AsyncEventFd.waitPoll` 轮询的正是自己的 eventfd，
+                    // 随 `Async.deinit()` 而 close），在途 poll 遂回 `-EBADF`。
+                    // 此前本分支只有兜底 `unexpectedErrno`（**panic 路径**），于是
+                    // 「销毁 Async 时其 wait 仍挂着」在 io_uring 上直接 panic：
+                    // linuxvm soak 实测 `unexpected errno: 9`，栈 io_uring.zig:811 ← tick:255。
+                    // 语义上这属于**取消**（poll 目标已不存在），调用方应据此收敛而非崩溃；
+                    // PollError 的错误集恰为 `error{ Canceled, Unexpected }`，故映射到 Canceled。
+                    .BADF, .CANCELED => error.Canceled,
                     else => |errno| posix.unexpectedErrno(errno),
                 },
             },

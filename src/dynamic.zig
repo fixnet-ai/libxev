@@ -172,6 +172,34 @@ pub fn Xev(comptime bes: []const AllBackend) type {
                     ).run(mode),
                 }
             }
+
+            /// 删除 completion（09-14 补齐）。与 static 后端同名同义，按并集分发到对应
+            /// 后端的 delete（Completion 是 DynamicCompletion，取 .value 的对应变体，
+            /// 写法对齐 watcher/async.zig 的 dynamic 分支）。
+            /// 补齐动机：该 API 此前**只落在 static 后端** ⇒ 任何走 dynamic API 的构建
+            /// （交叉编译通用 Linux/Windows 目标即此）直接编译失败：
+            ///   no field or member function named 'delete' in 'dynamic.Xev(...).Loop'
+            pub fn delete(self: *Loop, completion: *Completion) bool {
+                return switch (backend) {
+                    inline else => |tag| @field(
+                        self.backend,
+                        @tagName(tag),
+                    ).delete(&@field(completion.value, @tagName(tag))),
+                };
+            }
+
+            /// 同步删除变体（09-14 补齐，语义见各 static 后端）：
+            /// 返回 true = 已同步摘除、调用方**即刻拥有**该 completion（可重挂/释放）；
+            /// false = 回调链仍持有（不得重挂/释放）。**io_uring 后端无同步语义 → 恒 false**
+            /// （与其 static 实现一致）。
+            pub fn deleteSync(self: *Loop, completion: *Completion) bool {
+                return switch (backend) {
+                    inline else => |tag| @field(
+                        self.backend,
+                        @tagName(tag),
+                    ).deleteSync(&@field(completion.value, @tagName(tag))),
+                };
+            }
         };
 
         /// Helpers to convert between the subset/superset of backends.

@@ -248,6 +248,20 @@ pub const Loop = struct {
         return true;
     }
 
+    /// 同步删除变体（契约见 kqueue 同名前注释）：fd 型 completion 在 epoll 上
+    /// 已是同步摘除（S20：state .dead + stop_completion + active-=1 → true），
+    /// 直接委托 delete()；无 fd 的 timer/cancel 走 deletions 延迟队列（回调链
+    /// 拥有清理权）→ 返回 false，调用方不得立即释放。
+    pub fn deleteSync(self: *Loop, completion: *Completion) bool {
+        switch (completion.flags.state) {
+            .deleting, .dead, .adding => return false,
+            .active => {},
+        }
+        const maybe_fd = if (completion.flags.dup) completion.flags.dup_fd else completion.fd();
+        if (maybe_fd == null) return false;
+        return self.delete(completion);
+    }
+
     /// Returns the "loop" time in milliseconds. The loop time is updated
     /// once per loop tick, before IO polling occurs. It remains constant
     /// throughout callback execution.
@@ -997,6 +1011,18 @@ pub const Loop = struct {
                 error.FileDescriptorNotRegistered => {},
                 else => unreachable,
             };
+
+            // dup 型注册的 dup_fd 是本后端私有、懒创建并缓存的（见 fd_maybe_dup）：
+            // 摘除注册后必须一并关闭，否则每次 delete()/deleteSync() 泄漏一个 fd。
+            // tick() 的 .disarm 分支一直有这一步（close_dup），删除路径此前漏了——
+            // 对「靠回调 disarm 收尾」的调用方不可见（那里最后仍走 disarm），但对
+            // 同步摘除路径（fixnet：会话重建时同步删除 TUN 读 watcher）就是逐次累积。
+            // 复位 dup_fd=0：fd_maybe_dup 以 `dup_fd > 0` 判复用，置 0 使后续重挂
+            // 重新 dup；flags.dup 保持不变（表示「本 completion 需要 dup」的意图）。
+            if (completion.flags.dup and completion.flags.dup_fd > 0) {
+                xev_posix.close(completion.flags.dup_fd);
+                completion.flags.dup_fd = 0;
+            }
         } else switch (completion.op) {
             .timer => |*v| {
                 const c = v.c;

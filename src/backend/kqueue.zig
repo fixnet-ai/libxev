@@ -233,6 +233,56 @@ pub const Loop = struct {
         return false;
     }
 
+    /// 同步删除变体（09-14）：摘除注册且**不排任何回调**，ownership 即刻归还调用方。
+    ///
+    /// 与 `delete()` 的差异：kqueue 的 delete() 对 .active completion 会把它排入
+    /// completions 队列，下一 tick 以 CANCELED 触发一次回调（回调链拥有清理权）。
+    /// 该契约隐含「completion 内存必须活到取消链跑完」——而宿主内嵌 completion
+    /// 的形态做不到：宿主（如 zo TcpBridge）释放时内嵌的 completion 随之失效，
+    /// 取消链随后 deref 即 UAF（真机 .ips：TcpBridge.onTunRead ← machport
+    /// wait callback ← kqueue tick，网络切换/软重建下稳定复现）。
+    ///
+    /// 本变体专供「宿主即将释放、内嵌 completion 随之失效」的回收路径：
+    ///   - 回调正在执行（tick 已置 .dead）→ false（回调链拥有，调用方不得释放）
+    ///   - .adding（已入 submissions、尚未 start）→ **从 submissions 真正摘除** +
+    ///     置 .dead → true（不会进内核，也无回调）
+    ///   - .active 且无待派发结果 → syncDelete(kevent) + active-=1 + 置 .dead → true
+    ///   - .deleting / 已有 result（已排入 completions 待回调）→ false
+    pub fn deleteSync(self: *Loop, completion: *Completion) bool {
+        switch (completion.flags.state) {
+            .deleting, .dead => return false,
+
+            .adding => {
+                // 必须**真正摘除**：`.adding` 的唯一来源是 add()，它把节点 push 进
+                // self.submissions（Intrusive 无 remove API，只有 submit() 会 pop）。
+                // 只置 .dead 而留在队列里，会让「返回 true ⇒ 调用方即刻拥有」这条契约
+                // 失真：调用方照契约重挂同一 completion 时，push 会二次入队该节点 ——
+                // 尾节点时 `assert(v.next == null)` 不触发（其 next 本就是 null），
+                // `tail.next = v` 成自环，pop() 把同一节点返回两次，第二次弹出时状态
+                // 已被 start() 改成 `.active` → "invalid state in submission queue"
+                // 静默丢弃该节点（既不补发 EV_DELETE 也不触发 CANCELED 回调）。
+                // 真机症状：iOS 单会话三对同毫秒 E/W 日志后 PAC 失效崩溃；
+                // 本机最小复现：watcher/async.zig 的 deleteSync-on-.adding 测试。
+                _ = self.submissions.remove(completion);
+                completion.flags.state = .dead;
+                return true;
+            },
+
+            .active => {},
+        }
+
+        // 已入 completions 队列等待最终回调 → 回调链拥有清理权
+        if (completion.result != null) return false;
+
+        if (completion.kevent()) |ev| {
+            self.syncDelete(ev);
+            self.active -= 1;
+            completion.flags.state = .dead;
+            return true;
+        }
+        return false;
+    }
+
     /// Submit any enqueue completions. This does not fire any callbacks
     /// for completed events (success or error). Callbacks are only fired
     /// on the next tick.
@@ -1554,6 +1604,13 @@ pub const Completion = struct {
                 .machport = switch (errno) {
                     .SUCCESS => {},
                     .CANCELED => error.Canceled,
+                    // 09-14（VM 暴力压测实证）：被等待的 mach port 消失并**不意外**——
+                    // `AsyncMachPort.deinit()` 是裸 `mach_port_destroy`，若其 wait 仍挂在
+                    // loop 上，随后 submit() 处理该 completion 时内核回 ENOENT。
+                    // 此前落到兜底 `unexpectedErrno`（**panic 路径**）：macvm kqueue 实测
+                    // `unexpected errno: 2`，栈 syscall_result ← submit ← tick ← run。
+                    // 语义同 io_uring 的 EBADF：等待目标已不存在 ⇒ 取消，调用方据此收敛。
+                    .NOENT => error.Canceled,
                     else => |err| posix.unexpectedErrno(err),
                 },
             },

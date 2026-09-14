@@ -146,6 +146,13 @@ pub const Loop = struct {
         self.submissions.push(completion);
     }
 
+    /// 同步删除变体（契约见 kqueue 同名前注释）：IOCP 无内核注册表（armed wait
+    /// 是纯内存 waiter），delete() 对 .adding 与 async_wait 已同步置 .dead 并归还
+    /// ownership → 直接委托；其余情形回调链拥有 → false。
+    pub fn deleteSync(self: *Loop, completion: *Completion) bool {
+        return self.delete(completion);
+    }
+
     /// Delete a completion from the loop.
     ///
     /// Returns true when the completion was removed from its pending wait
@@ -166,7 +173,16 @@ pub const Loop = struct {
 
             // Queued but not yet submitted: mark dead so submit() stops
             // it. No callback will ever fire — ownership returns to caller.
+            //
+            // 09-14：必须**真正从 submissions 摘除**，不能只置 .dead（与 kqueue 同一
+            // 缺陷，VM 暴力压测在 windowsvm/iocp 上同样压出）：`.adding` 的唯一来源是
+            // add()/submit 前的入队，节点仍在 `self.submissions` 里；只改状态而留在队列，
+            // 「返回 true ⇒ 调用方即刻拥有」这条契约就失真 —— 调用方照契约重挂同一
+            // completion 时会让同一节点二次入队（尾节点时 push 的 assert 不触发，
+            // `tail.next = v` 成自环），pop() 返回两次，第二次弹出时状态已被 start
+            // 改成 `.active` → "invalid state in submission queue state=.active"。
             .adding => {
+                _ = self.submissions.remove(completion);
                 completion.flags.state = .dead;
                 return true;
             },
@@ -969,8 +985,18 @@ pub const Loop = struct {
                 if (completion.op == .async_wait) {
                     clearAsyncWaiter(completion, completion.op.async_wait.waiter_gen);
                 }
+                // 09-14：本分支原为**无条件** `self.active -= 1`，而同函数其余所有分支
+                // 都带 `if (completion.flags.state == .active)` 守卫 —— 未被计入 active
+                // 的 completion 走到此处即 usize 下溢 → panic。
+                // VM 暴力压测实证（windowsvm / iocp）：
+                //   panic: integer overflow @ iocp.zig:980 ← submit:213 ← tick:277
+                // 触发场景 = 「Async 被销毁时其 wait 仍挂着」：AsyncIOCP.deinit 是空实现，
+                // 挂起的 async_wait completion 不被回收；随后 submit 以 .dead 状态弹出它
+                // 进 stop_completion，而它并不在 active 计数里。
+                // 对齐其余分支：仅在确实 .active（= 已被计数）时递减。必须在置 .dead
+                // **之前**判定，否则守卫恒假。
+                if (completion.flags.state == .active) self.active -= 1;
                 completion.flags.state = .dead;
-                self.active -= 1;
             },
         }
     }
