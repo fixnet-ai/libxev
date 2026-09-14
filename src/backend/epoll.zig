@@ -40,6 +40,11 @@ const epoll_helper = struct {
             .EXIST => return error.FileDescriptorAlreadyPresentInSet,
             .LOOP => return error.OperationCausesCircularLoop,
             .NOENT => return error.FileDescriptorNotRegistered,
+            // EBADF: fd 不是有效打开的文件描述符（已被关闭）。单独命名而不是
+            // 落进 Unexpected —— 在 DEL 路径上它与 ENOENT 同义（fd 都没了，
+            // 注册必然也不在），调用方需要能按名字容错；留作 Unexpected 只会
+            // 让「关闭在途 fd」这一已知时序窗表现成不可名状的恐慌。
+            .BADF => return error.FileDescriptorNotOpen,
             .NOMEM => return error.SystemResources,
             .NOSPC => return error.UserResourceLimitReached,
             .PERM => return error.FileDescriptorIncompatibleWithEpoll,
@@ -570,6 +575,17 @@ pub const Loop = struct {
                                 // while a completion is in flight -> completion
                                 // fires, returns .disarm -> DEL ENOENT.
                                 error.FileDescriptorNotRegistered => {},
+                                // EBADF 变体：fd 不是「已摘注册」而是**已被关闭**，
+                                // 注册同样随 fd 消失 ⇒ 摘除目标已达成（Linux 语义：
+                                // close 隐式摘除 epoll 注册）。实测（fixnet zigbox
+                                // #32，Android 重建路径 + 在途连接）：批量 disarm
+                                // 命中 EBADF，旧代码落进 `else => unreachable`
+                                // → panic → 引擎静默死亡（约 20% 命中率）。
+                                // 容错但**不静默**：留 warn 以便现场可归因。
+                                error.FileDescriptorNotOpen => std.log.warn(
+                                    "xev(epoll): DEL on closed fd during disarm (registration already gone)",
+                                    .{},
+                                ),
                                 else => unreachable,
                             };
 
@@ -1009,6 +1025,12 @@ pub const Loop = struct {
                 null,
             ) catch |err| switch (err) {
                 error.FileDescriptorNotRegistered => {},
+                // 同 tick() disarm 路径：EBADF = fd 已被关闭，注册随之消失。
+                // 两处必须同改（S14 教训：同一生命周期缺口会在多个删除点各自爆炸）。
+                error.FileDescriptorNotOpen => std.log.warn(
+                    "xev(epoll): DEL on closed fd in stop_completion (registration already gone)",
+                    .{},
+                ),
                 else => unreachable,
             };
 
@@ -1554,6 +1576,7 @@ pub const EpollCtlError = error{
     FileDescriptorAlreadyPresentInSet,
     OperationCausesCircularLoop,
     FileDescriptorNotRegistered,
+    FileDescriptorNotOpen,
     SystemResources,
     UserResourceLimitReached,
     FileDescriptorIncompatibleWithEpoll,
