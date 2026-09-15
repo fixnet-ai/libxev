@@ -1086,7 +1086,21 @@ pub const Loop = struct {
             .timer => |*v| {
                 const c = v.c;
 
-                if (c.flags.state == .active) {
+                // 在堆上 ⟺ 状态为 .active（正常在飞）**或 .deleting**（delete() 的
+                // 无 fd 路径只标状态入队、不摘除，摘除责任就在本分支——见 delete()
+                // 「timer/cancel 保留延迟路径」注释）。只认 .active 会漏摘：节点带着
+                // 堆链接被下面置 .dead，成为「已判死却仍在树中」的脏节点。
+                // 后果有二：
+                // ① 该 completion 被复用时（Timer.run → backend timer() 的 `c.* = .{}`）
+                //    覆写的是仍在树中的 next/prev → 堆结构损坏 → 之后任一成员
+                //    heap.remove 的 `prev orelse assert(root.? == v)` 命中 →
+                //    ReleaseSafe 下 unreachable → SIGABRT；
+                // ② active 计数永不回收（下方 tail 同样只认 .active）→
+                //    `while (self.active > 0 …)` 收不住，timeout 退化为 0 →
+                //    epoll_wait 立即返回 → 空转烧满一核。
+                // 与 delete() 里 S20 那段注释指的是同一个洞：当时只给 fd 路径做了
+                // 同步摘除绕开它，timer 路径留着，本次补完那半步。
+                if (c.flags.state == .active or c.flags.state == .deleting) {
                     // Timers needs to be removed from the timer heap.
                     self.timers.remove(v);
                 }
@@ -1122,7 +1136,15 @@ pub const Loop = struct {
 
         // Decrement the active count so we know how many are running for
         // .until_done run semantics.
-        if (completion.flags.state == .active) self.active -= 1;
+        //
+        // .deleting 与 .active 一并回收：走无 fd 延迟路径的 timer 在 delete()
+        // 时未减计数（那个减法的责任在 timer 分支内部——见上方注释），本处是
+        // 它唯一的回收点。只认 .active 会让 `while (self.active > 0 …)` 永不
+        // 收敛。fd 型 completion 由 delete() 同步置 .dead，不会带 .deleting
+        // 到达本行；.cancel 型在 switch 的 else 分支即 unreachable，同样到不了。
+        if (completion.flags.state == .active or completion.flags.state == .deleting) {
+            self.active -= 1;
+        }
 
         // Mark the completion as done
         completion.flags.state = .dead;
@@ -2495,4 +2517,47 @@ test "epoll: completion deleted by an earlier callback in the same batch is neve
     // 被删一方同步摘除后落在 .dead
     const deleted = if (a.deleted_peer) &b else &a;
     try testing.expect(deleted.c.state() == .dead);
+}
+
+test "epoll: deleting an armed timer unlinks it from the timer heap" {
+    const testing = std.testing;
+
+    var loop = try Loop.init(.{});
+    defer loop.deinit();
+
+    // 起一个在飞 timer。loop.timer() 只入 submissions（.adding），真正插堆发生在
+    // start()；flushPending 走完提交段 = 「提前跑一次 tick 开头」。
+    var c1: Completion = undefined;
+    loop.timer(&c1, 60_000, null, (struct {
+        fn callback(_: ?*anyopaque, _: *Loop, _: *Completion, _: Result) CallbackAction {
+            return .disarm;
+        }
+    }).callback);
+    loop.flushPending();
+    try testing.expect(c1.state() == .active);
+    try testing.expect(loop.timers.root != null);
+
+    const active_before = loop.active;
+
+    // 无 fd 走延迟路径：只标 .deleting 并入队，**此刻仍在堆上**（摘除责任在延迟
+    // 段，见 delete() 注释），契约上返回 false（完成回路尚未走完）。
+    // 注意 state() 是公开视图，会把 .deleting 折成 .active——要判别走没走延迟
+    // 路径必须读内部 flags.state。
+    try testing.expect(!loop.delete(&c1));
+    try testing.expect(c1.flags.state == .deleting);
+    try testing.expect(loop.timers.root != null);
+
+    loop.drainDeletions();
+
+    // 不变量 ①：判死后必须离开堆。stop_completion 的 timer 分支若只认 .active，
+    // 这里会漏摘，留下「已 .dead 却仍挂在堆上」的脏节点；该 completion 被复用时
+    //（Timer.run → timer() 的 `c.* = .{}`）覆写的正是树仍在引用的 next/prev →
+    // 堆结构损坏 → 之后任一成员 remove 的 `prev orelse assert(root.? == v)` 命中
+    // → ReleaseSafe 下 unreachable → SIGABRT（Android tierA 起→立即停 路径实测）。
+    try testing.expect(c1.state() == .dead);
+    try testing.expect(loop.timers.root == null);
+
+    // 不变量 ②：active 计数必须回收。漏减 → `while (self.active > 0 …)` 收不住，
+    // timeout 退化为 0 → epoll_wait 立即返回 → 空转烧满一核。
+    try testing.expect(loop.active == active_before - 1);
 }
