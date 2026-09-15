@@ -581,6 +581,35 @@ fn AsyncIOCP(comptime xev: type) type {
                 r: WaitError!void,
             ) xev.CallbackAction,
         ) void {
+            // 幂等防线（下行走廊停摆，2026-09-16）：wait() 会**无条件全量重写
+            // `c.*`**（state 复位 .dead、next 清 null）再 add()，从而绕过 add() 的
+            // `.adding => return` 防线。对一个**已挂载**的 completion 再调 wait() 即：
+            //   ① 在 asyncs 链上把 c.next 清空 → **链自 c 处截断**，排在 c 之后的每个
+            //      async_wait 永久失联。IOCP 下 loop.async_notify()（backend/iocp.zig）
+            //      只投一个空 PQCS，completion 唯一被触发的途径就是 asyncs 扫描 ——
+            //      失联者的 wakeup 被照常置位却无人扫描，其回调再不执行。实测现场：
+            //      TcpBridge 的 c_engine_async 被困 ⇒ 下行走廊 down_queue 非空、无在途
+            //      写、永不排空，停摆直至连接终结（q=2 wi=false 持续到 clientClose）；
+            //   ② 把 c 自己也推进 submissions → 下一轮 submit() 弹出时状态已被
+            //      start_completion（asyncs 扫描的 .rearm 分支）改成 .active →
+            //      打印 "invalid state in submission queue state=.active" 并**静默丢弃**。
+            // 语义上「对已登记的等待再 wait 一次」恒为无操作：唤醒链路已挂载，notify()
+            // 置 wakeup 后 asyncs 扫描自会触发，既无需也不得重新登记。正规的「回调内
+            // 重挂」不受本防线影响——回调执行期间 iocp.zig 已先把 state 置 .dead，
+            // 且当时该节点已随 `asyncs` 整体摘链（见 tick() 的 asyncs 段）。
+            //
+            // 本防线是**纵深**，不是根因修复：它只看 flags.state，因此对 zombie
+            // （state 已 .dead、节点却仍挂在 asyncs 链上）无效。zombie 的成因是
+            // stop_completion 对 .async_wait 只置 .dead 不摘链，已在 backend/iocp.zig
+            // 该分支修复；调用侧（zigtun 的 WinTun 交接重臂、mixed_stack 同款）的
+            // 看门狗重臂曾被认为是触发方，实为**受害链的下游表现**，非成因。
+            if (c.state() == .active and c.op == .async_wait) {
+                std.log.warn("[async.iocp] wait() on already-armed completion c=0x{x} - ignored (idempotent)", .{
+                    @intFromPtr(c),
+                });
+                return;
+            }
+
             c.* = .{
                 .op = .{ .async_wait = .{
                     .waiter_clear = &Self.clearWaiterCb,

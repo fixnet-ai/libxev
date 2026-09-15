@@ -54,6 +54,20 @@ pub const Loop = struct {
     /// Our queue of waiting completions
     asyncs: queue.Intrusive(Completion) = .{},
 
+    /// tick 的 asyncs 扫描期间指向**已整体摘出**的那份链副本，非扫描期为 null。
+    ///
+    /// 扫描采用「整体摘链到局部变量、扫完再回队」的写法（见 tick），于是扫描期间
+    /// `self.asyncs` 是空的：此刻若有回调对**本批尚未访问**的 async_wait 调
+    /// delete()，`self.asyncs.remove()` 摘不到它 —— 节点既留在局部副本里，又已被
+    /// stop_completion 置 .dead。若调用方随后按 delete() 契约重新 wait()，wait()
+    /// 的 `c.* = .{}` 会清空该节点的 next，**局部副本自此处截断**，排在它之后的
+    /// 每个 async_wait 随副本一起被丢弃（IOCP 下 completion 唯一触发途径就是
+    /// asyncs 扫描）⇒ 与 zombie 同形的永久失联。槽位复用的调用方正是这个形状：
+    /// delete → 清槽 → 之后对同一 completion 重新 wait（如 zo stream/tcp.zig 的
+    /// pending_read_c/pending_write_c）。记录副本指针即可让 remove 命中，无需改动
+    /// 扫描语义。
+    asyncs_scan: ?*queue.Intrusive(Completion) = null,
+
     /// Heap of timers.
     timers: TimerHeap = .{ .context = {} },
 
@@ -220,10 +234,9 @@ pub const Loop = struct {
             switch (c.flags.state) {
                 .adding => self.start_completion(c),
                 .dead => self.stop_completion(c, null),
-                .active => std.log.err(
-                    "invalid state in submission queue state={}",
-                    .{c.flags.state},
-                ),
+                .active => std.log.err("invalid state in submission queue state={} c=0x{x}", .{
+                    c.flags.state, @intFromPtr(c),
+                }),
             }
         }
     }
@@ -253,8 +266,13 @@ pub const Loop = struct {
                 .dead => {},
 
                 // If it is in the submission queue, mark them as dead so they will never be
-                // submitted.
-                .adding => target.flags.state = .dead,
+                // submitted. 必须**真正摘除**，不能只置 .dead —— 只改状态会让 submit()
+                // 稍后仍弹出该节点（`queued.pop()` 顺手清 c.next，若该节点同时还在别的
+                // 链上即从 c 处截断那条链）。与 delete() 的 .adding 分支同族，见其注释。
+                .adding => {
+                    _ = self.submissions.remove(target);
+                    target.flags.state = .dead;
+                },
 
                 // If it is active we need to schedule the deletion.
                 .active => self.stop_completion(target, &cancel_result),
@@ -365,7 +383,22 @@ pub const Loop = struct {
                 var asyncs = self.asyncs;
                 self.asyncs = .{};
 
+                // 扫描期把副本位置告诉 stop_completion：本批未访问的节点不在
+                // `self.asyncs` 上，delete() 只能到副本里摘（见 asyncs_scan 字段注释）。
+                // 保存/恢复而非直接置空，以防回调内再次进入 tick。
+                const prev_scan = self.asyncs_scan;
+                self.asyncs_scan = &asyncs;
+                defer self.asyncs_scan = prev_scan;
+
                 while (asyncs.pop()) |c| {
+                    // 防御纵深（2026-09-16）：`asyncs` 只应容纳 .active 的 async_wait。
+                    // 走到这里仍是 .dead 的节点即 zombie —— owner 已认定它「不再被回调」
+                    // （delete() 返回过 true）或已被取消，却仍占着链。回队会让它继续参与
+                    // 链截断与 push 自环；触发回调又违反 delete() 契约。故直接丢弃：
+                    // 不回队、不消费 wakeup、不触发回调。active 计数在它转 .dead 时已减，
+                    // wait_rem 只随真正的触发递减，二者均无需补偿。
+                    if (c.flags.state == .dead) continue;
+
                     const c_wakeup = c.op.async_wait.wakeup.swap(false, .seq_cst);
 
                     // If we aren't waking this one up, requeue
@@ -996,7 +1029,33 @@ pub const Loop = struct {
                 // completion 处于 active 状态，它们没有内核资源需要释放。
                 // async_wait 取消时同步清除 AsyncIOCP.waiter（UAF 修复，#168），
                 // 防止 loop 关闭后 notify() 仍 async_notify 该 completion。
+                //
+                // 下行走廊停摆根因修复（2026-09-16）：async_wait 置 .dead 时必须
+                // **真正从 `self.asyncs` 摘除**，否则留下 zombie（state() 报 .dead、
+                // 节点却仍挂在 asyncs 链上）。zombie 能骗过所有基于状态的自愈防线
+                // ——桥侧 `.active` 守卫、AsyncIOCP.wait() 的幂等防线只看 flags.state，
+                // 于是调用方「按契约重挂」时：① wait() 的 `c.* = .{}` 把 c.next 清空，
+                // **链自 c 处截断**，排在 c 之后的每个 async_wait 永久失联（IOCP 下
+                // async_notify 只投空 PQCS，completion 唯一触发途径就是 asyncs 扫描）
+                // ⇒ 下行走廊 q>0 / wi=false / ri=true 永不排空，停摆至连接终结；
+                // ② add() 再把 c 推进 submissions，而两条链共享 `completion.next`，
+                // 下一轮 submit() 弹出时状态已被 start_completion 改成 .active →
+                // 打印 "invalid state in submission queue state=.active" 并静默丢弃。
+                // 真机实证（windowsvm / tun-vtun，带 [IOT] 探针）：
+                //   DEL c=0x…93a0 op=async_wait st=active sub=false asy=true
+                //   → 桥槽位复用后同一地址 ARM-READ/Wait 时
+                //   DUP c=0x…93a0 st=dead sub=false **asy=true**（zombie 铁证）
+                //   ADD c=0x…93a0 st=adding **asy=true** → POP → SC
+                // 摘除后 `delete()` 的契约（返回 true ⇒ 已离开待命、此后永无回调）
+                // 才在 IOCP 上真正成立 —— tunconn.zig 的 reclaimPending「返回 true
+                // 即销毁 ReadOpT」正是依赖这条契约。
                 if (completion.op == .async_wait) {
+                    // 节点在 `self.asyncs` 上（常态），或在本轮扫描副本上（扫描期
+                    // 调用，见 asyncs_scan 字段注释）。两处都试，未挂载时两次都返回
+                    // false，亦为常态。
+                    if (!self.asyncs.remove(completion)) {
+                        if (self.asyncs_scan) |scan| _ = scan.remove(completion);
+                    }
                     clearAsyncWaiter(completion, completion.op.async_wait.waiter_gen);
                 }
                 // 09-14：本分支原为**无条件** `self.active -= 1`，而同函数其余所有分支
