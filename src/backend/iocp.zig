@@ -228,6 +228,20 @@ pub const Loop = struct {
         }
     }
 
+    /// 排空延迟取消队列（跨后端同名入口，语义定义源见 epoll 同名函数）。
+    /// 调用方在释放宿主内存前调本函数，把 tick 内的取消收尾提前做掉。
+    pub fn drainDeletions(self: *Loop) void {
+        self.process_cancellations();
+    }
+
+    /// 排空待处理队列，不进入 IOCP 等待（语义定义源见 epoll 同名函数）。
+    /// 与 kqueue 同族：取消先落 cancellations，回调在后续 tick 派发 ——
+    /// 宿主内存须活到那次派发。**须在 loop 线程调用**。
+    pub fn flushPending(self: *Loop) void {
+        self.update_now();
+        self.process_cancellations();
+    }
+
     /// Process the cancellations queue. This doesn't call any callbacks but can potentially make
     /// system call to cancel active IO.
     fn process_cancellations(self: *Loop) void {

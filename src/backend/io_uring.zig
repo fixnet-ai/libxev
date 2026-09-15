@@ -437,6 +437,21 @@ pub const Loop = struct {
         return false;
     }
 
+    /// 排空延迟删除队列（跨后端同名入口，语义定义源见 epoll 同名函数）。
+    /// io_uring 无此队列：已提交的 SQE 无法从内核撤回（CQE 必达一次），
+    /// delete()/deleteSync() 均恒返回 false —— 回调链拥有清理权，调用方本就
+    /// 必须保留 completion 内存至回调抵达，故空实现即正确语义。
+    pub fn drainDeletions(self: *Loop) void {
+        _ = self;
+    }
+
+    /// 排空待处理队列，不进入 io_uring 等待（语义定义源见 epoll 同名函数）。
+    /// io_uring 无从提前：取消 SQE 必由内核回一次 CQE，回调只能在 tick 派发 ——
+    /// 调用方必须按回执计数保留宿主内存至回执抵达，本函数为空即正确语义。
+    pub fn flushPending(self: *Loop) void {
+        _ = self;
+    }
+
     /// Internal add function. The only difference is try_submit. If try_submit
     /// is true, then this function will attempt to submit the queue to the
     /// ring if the submission queue is full rather than filling up our FIFO.

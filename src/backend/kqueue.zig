@@ -408,6 +408,30 @@ pub const Loop = struct {
         }
     }
 
+    /// 排空延迟取消队列（跨后端同名入口，语义定义源见 epoll 同名函数）。
+    /// kqueue 的删除是「回调链拥有清理权」模型：delete() 本就恒返回 false，
+    /// 取消经 cancellations 队列在 tick 内处理。调用方在释放宿主内存前调本函数，
+    /// 可把这一步提前做掉（本函数不投递任何回调，见 process_cancellations 注释）。
+    pub fn drainDeletions(self: *Loop) void {
+        self.process_cancellations();
+    }
+
+    /// 排空待处理队列，不进入 kevent 等待（语义定义源见 epoll 同名函数）。
+    /// kqueue 的取消是**两跳**：submissions →（submit/start）→ cancellations →
+    /// （process_cancellations）→ completions →（下一 tick 派发）→ 回调。本函数把
+    /// 前两跳推进到底，取消 carrier 落在 completions 队列里等下一次 tick 派发
+    /// ——**宿主内存必须活到那次派发**（epoll 侧则在本函数内同步派发完）。
+    /// **须在 loop 线程调用**。
+    pub fn flushPending(self: *Loop) void {
+        self.update_now();
+        self.process_cancellations();
+        self.submit() catch |err| {
+            std.log.warn("xev(kqueue): flushPending submit failed: {}", .{err});
+        };
+        // submit 会把新到的 .cancel 提交转进 cancellations，再推一跳。
+        self.process_cancellations();
+    }
+
     /// Process the cancellations queue. This doesn't call any callbacks
     /// or perform any syscalls. This just shuffles state around and sets
     /// things up for cancellation to occur.

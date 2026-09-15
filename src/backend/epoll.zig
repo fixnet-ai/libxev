@@ -249,8 +249,48 @@ pub const Loop = struct {
 
         completion.flags.state = .deleting;
 
+        // 无 fd（timer/cancel）：本 completion **仍挂在 deletions 队列上**，下一轮
+        // tick 开头的 drainDeletions() 会读 `c.flags.state` 并 stop_completion(c)
+        // （写 c，必要时投递 .cancel 回调）——完成回路尚未走完。
+        // ⇒ 此处**不得**返回 true：true 的契约是「永无回调、调用方可立即释放宿主」。
+        // 与 deleteSync 对齐返回 false（那侧注释早已明写「调用方不得立即释放」）：
+        // 同一情形两个 API 给出相反契约，曾使 fixnet zigbox 在重建路径 SIGSEGV ——
+        // 调用方见 true 即释放会话 arena，而队列 tail 指着 arena 内的该 completion，
+        // 下一次 push 的 `tail.next = v` 写未映射页（findings §三十三）。
+        // 调用方若要「排空后即可释放」，先调 drainDeletions()。
         self.deletions.push(completion);
-        return true;
+        return false;
+    }
+
+    /// 排空延迟删除队列（epoll 的 timer/cancel 无 fd 可同步摘除，走此队列）。
+    /// 返回后：此前经 delete() 提交的 completion 均已 stop_completion 并从队列摘除
+    /// ⇒ 调用方可安全释放其宿主内存。**须在 loop 线程调用**（队列无锁）。
+    /// 注意 stop_completion 可能投递 .cancel 回调（timer 分支），与 tick 开头那次
+    /// 排空语义完全相同——即「等同于提前跑一次 tick 的删除段」。
+    pub fn drainDeletions(self: *Loop) void {
+        while (self.deletions.pop()) |c| {
+            if (c.flags.state != .deleting) continue;
+            self.stop_completion(c);
+        }
+    }
+
+    /// 排空待处理队列（**提交段 + 删除段**），不进入 epoll_wait。
+    /// 语义 = 「提前跑一次 tick 的开头两段」：调用方在释放 completion 宿主内存前，
+    /// 用它把已提交、尚未被 loop 消费的异步义务结算掉（典型：`Timer.cancel` 的
+    /// carrier——其节点就在宿主内存里，挂在 submissions 队列上，不结算则释放后
+    /// 队列 tail 悬垂，下一次 push 写未映射页）。
+    /// 返回后：调用前已在 submissions 的 completion 均已 start()（可同步完成的
+    /// 回调已就地触发），deletions 队列亦已排空。**须在 loop 线程调用**（队列无锁）。
+    /// 注意 start() 内新提交的 completion 归下一轮，与 tick 同语义。
+    pub fn flushPending(self: *Loop) void {
+        self.update_now();
+        var queued = self.submissions;
+        self.submissions = .{};
+        while (queued.pop()) |c| {
+            if (c.flags.state != .adding) continue;
+            self.start(c);
+        }
+        self.drainDeletions();
     }
 
     /// 同步删除变体（契约见 kqueue 同名前注释）：fd 型 completion 在 epoll 上
@@ -449,10 +489,7 @@ pub const Loop = struct {
         }
 
         // Handle all deletions so we don't wait for them.
-        while (self.deletions.pop()) |c| {
-            if (c.flags.state != .deleting) continue;
-            self.stop_completion(c);
-        }
+        self.drainDeletions();
 
         // If we have no active handles then we return no matter what.
         if (self.active == 0) {
