@@ -108,6 +108,12 @@ fn AsyncEventFd(comptime xev: type) type {
                 r: WaitError!void,
             ) xev.CallbackAction,
         ) void {
+            // Recycled-while-registered guard: re-arming a completion that is
+            // still registered corrupts the queues — `c.* = .{}` below would
+            // wipe a live registration back to a noop op. Fail here at the
+            // call site (assert is active in ReleaseSafe).
+            assert(c.state() == .dead);
+
             c.* = .{
                 .op = .{
                     .read = .{
@@ -336,6 +342,12 @@ fn AsyncMachPort(comptime xev: type) type {
                 r: WaitError!void,
             ) xev.CallbackAction,
         ) void {
+            // Recycled-while-registered guard: re-arming a completion that is
+            // still registered corrupts the queues — `c.* = .{}` below would
+            // wipe a live registration back to a noop op. Fail here at the
+            // call site (assert is active in ReleaseSafe).
+            assert(c.state() == .dead);
+
             c.* = .{
                 .op = .{
                     .machport = .{
@@ -1030,6 +1042,51 @@ fn AsyncTests(comptime xev: type, comptime Impl: type) type {
 
             loop.run(.no_wait) catch {};
             _ = testing;
+        }
+
+        // M-1B（2026-09-22）幸存性钉子：宿主在 completion 仍入队时整体重填（zo TcpBridge
+        // 池化 init 的 `self.* = .{...}` 同款）—— op 抹回 noop、state 抹回 dead。submit()
+        // 弹出该节点时必须优雅丢弃（.dead → stop_completion no-op），loop 存活。
+        //
+        // ⚠️ stale knote 触发路径（perform/kevent/syscall_result 的 .noop 降级）**无法**
+        // 用单测覆盖：降级按契约打 log.err，而 Zig 0.16 测试运行器把 log.err 无条件计为
+        // step 失败（test_runner.zig log() 的 log_err_count，不受 testing.log_level 过滤）。
+        // 该路径由生产侧防线兜底：add()/timer()/wait() 入口断言在重挂点引爆 + zo 池化
+        // init/deinit 断言在注入源头引爆 + 高 churn 压测取证。
+        // （iocp/wasi_poll 的唤醒链按 op 类型扫描，整体重填后唤醒不可达 → 会假挂起，
+        // 不在本测试范围。）
+        test "async: wiped-while-queued completion is dropped without crash" {
+            if (xev.backend == .iocp or xev.backend == .wasi_poll) return;
+
+            var loop = try xev.Loop.init(.{});
+            defer loop.deinit();
+
+            var notifier = try Impl.init();
+            defer notifier.deinit();
+
+            var hits: usize = 0;
+            var c_wait: xev.Completion = .{};
+            notifier.wait(&loop, &c_wait, usize, &hits, (struct {
+                fn callback(
+                    ud: ?*usize,
+                    _: *xev.Loop,
+                    _: *xev.Completion,
+                    r: Impl.WaitError!void,
+                ) xev.CallbackAction {
+                    _ = r catch {};
+                    ud.?.* += 1;
+                    return .disarm;
+                }
+            }).callback);
+
+            // 宿主复用：整体重填**尚未 submit**（state=.adding）的 completion
+            c_wait = .{};
+
+            // submit 弹出被抹写的节点：必须优雅丢弃，loop 存活，真回调不触发
+            try loop.run(.no_wait);
+            try notifier.notify();
+            try loop.run(.no_wait);
+            try std.testing.expectEqual(@as(usize, 0), hits);
         }
 
         test "async: notify first" {

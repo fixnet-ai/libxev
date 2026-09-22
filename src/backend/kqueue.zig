@@ -160,6 +160,12 @@ pub const Loop = struct {
     /// the loop is run (`run`, `tick`) or an explicit submission request
     /// is made (`submit`).
     pub fn add(self: *Loop, completion: *Completion) void {
+        // Recycled-while-registered guard: adding a completion that is still
+        // registered (.adding/.deleting/.active) means the host double-armed
+        // it or reset it while queued. Fail here at the call site instead of
+        // corrupting the queues (assert is active in ReleaseSafe).
+        assert(completion.state() == .dead);
+
         // If this is a cancellation, we special case it and add it to
         // a separate queue so we can handle them first.
         if (completion.op == .cancel) {
@@ -805,6 +811,13 @@ pub const Loop = struct {
         userdata: ?*anyopaque,
         comptime cb: Callback,
     ) void {
+        // Recycled-while-registered guard: re-arming a live (.adding/.active)
+        // timer wipes its heap registration and double-inserts into the heap.
+        // Fail here at the call site (assert is active in ReleaseSafe).
+        // (.deleting is accepted: timer_reset routes queued-for-deletion
+        // timers through here.)
+        assert(c.state() == .dead or c.flags.state == .deleting);
+
         c.* = .{
             .op = .{
                 .timer = .{
@@ -1147,6 +1160,10 @@ pub const Loop = struct {
                         v.next = r;
                         v.reset = null;
                         self.active -= 1;
+                        // The timer was just removed from the heap, so it is
+                        // no longer registered anywhere; add() asserts the
+                        // dead state on entry.
+                        c.flags.state = .dead;
                         self.add(c);
                         return;
                     }
@@ -1266,7 +1283,15 @@ pub const Completion = struct {
     /// "connect" requires you to initiate the connection first.
     fn kevent(self: *Completion) ?Kevent {
         return switch (self.op) {
-            .noop => unreachable,
+            // A noop op here means the host reset the completion (`c.* = .{}`)
+            // while it was still registered with the loop (e.g. a recycled
+            // host object). Degrade to "not trackable by kqueue" instead of
+            // crashing the process; the add()/timer()/wait() entry asserts
+            // surface the culprit at the call site.
+            .noop => blk: {
+                log.err("kqueue completion with noop op queried for kevent (recycled while registered?) c=0x{x}", .{@intFromPtr(self)});
+                break :blk null;
+            },
 
             .cancel,
             .close,
@@ -1349,12 +1374,23 @@ pub const Completion = struct {
     fn perform(self: *Completion, ev_: ?*const Kevent) Result {
         return switch (self.op) {
             .cancel,
-            .noop,
             .timer,
             .shutdown,
             => {
                 log.warn("perform op={s}", .{@tagName(self.op)});
                 unreachable;
+            },
+
+            // A noop op here means a stale kqueue registration fired for a
+            // completion the host reset (`c.* = .{}`) while it was still
+            // registered (e.g. a recycled host object). Report a canceled
+            // result instead of crashing: the wiped completion's callback is
+            // the noop callback, and the caller's disarm path removes the
+            // stale knote. The add()/timer()/wait() entry asserts surface the
+            // culprit at the call site.
+            .noop => blk: {
+                log.err("kqueue completion with noop op performed (recycled while registered?) c=0x{x}", .{@intFromPtr(self)});
+                break :blk .{ .cancel = error.Canceled };
             },
 
             .accept => |*op| .{
@@ -1516,7 +1552,15 @@ pub const Completion = struct {
     fn syscall_result(c: *Completion, r: i32) Result {
         const errno: posix.E = if (r >= 0) .SUCCESS else @enumFromInt(-r);
         return switch (c.op) {
-            .noop => unreachable,
+            // A noop op here means a kqueue registration fired for a
+            // completion the host reset (`c.* = .{}`) while it was still
+            // registered (e.g. a recycled host object). Degrade to a
+            // cancellation instead of crashing the process; the wiped
+            // completion's callback is the noop callback.
+            .noop => blk: {
+                log.err("kqueue completion with noop op failed to enqueue (recycled while registered?) errno={s} c=0x{x}", .{ @tagName(errno), @intFromPtr(c) });
+                break :blk .{ .cancel = error.Canceled };
+            },
 
             .accept => .{
                 .accept = switch (errno) {
@@ -2272,7 +2316,7 @@ test "kqueue: stop" {
 
     // Add the timer
     var called = false;
-    var c1: Completion = undefined;
+    var c1: Completion = .{};
     loop.timer(&c1, 1_000_000, &called, (struct {
         fn callback(ud: ?*anyopaque, l: *Loop, _: *Completion, r: Result) CallbackAction {
             _ = l;
@@ -2301,7 +2345,7 @@ test "kqueue: timer" {
 
     // Add the timer
     var called = false;
-    var c1: Completion = undefined;
+    var c1: Completion = .{};
     loop.timer(&c1, 1, &called, (struct {
         fn callback(
             ud: ?*anyopaque,
@@ -2319,7 +2363,7 @@ test "kqueue: timer" {
 
     // Add another timer
     var called2 = false;
-    var c2: Completion = undefined;
+    var c2: Completion = .{};
     loop.timer(&c2, 100_000, &called2, (struct {
         fn callback(
             ud: ?*anyopaque,
@@ -2371,7 +2415,7 @@ test "kqueue: timer reset" {
 
     // Add the timer
     var trigger: ?TimerTrigger = null;
-    var c1: Completion = undefined;
+    var c1: Completion = .{};
     loop.timer(&c1, 100_000, &trigger, cb);
 
     // We know timer won't be called from the timer test previously.
@@ -2413,7 +2457,7 @@ test "kqueue: timer reset before tick" {
 
     // Add the timer
     var trigger: ?TimerTrigger = null;
-    var c1: Completion = undefined;
+    var c1: Completion = .{};
     loop.timer(&c1, 100_000, &trigger, cb);
 
     // Reset the timer
@@ -2451,7 +2495,7 @@ test "kqueue: timer reset after trigger" {
 
     // Add the timer
     var trigger: ?TimerTrigger = null;
-    var c1: Completion = undefined;
+    var c1: Completion = .{};
     loop.timer(&c1, 1, &trigger, cb);
 
     // Run the timer
@@ -2481,7 +2525,7 @@ test "kqueue: timer cancellation" {
 
     // Add the timer
     var trigger: ?TimerTrigger = null;
-    var c1: Completion = undefined;
+    var c1: Completion = .{};
     loop.timer(&c1, 100_000, &trigger, (struct {
         fn callback(
             ud: ?*anyopaque,
@@ -2542,7 +2586,7 @@ test "kqueue: canceling a completed operation" {
 
     // Add the timer
     var trigger: ?TimerTrigger = null;
-    var c1: Completion = undefined;
+    var c1: Completion = .{};
     loop.timer(&c1, 1, &trigger, (struct {
         fn callback(
             ud: ?*anyopaque,
@@ -3072,7 +3116,7 @@ test "kqueue: timer armed from delayed callback must not fire early" {
         timer_started_ns: i128 = 0,
         timer_fired_ns: i128 = 0,
         timer_trigger: ?TimerTrigger = null,
-        timer_completion: Completion = undefined,
+        timer_completion: Completion = .{},
     };
 
     var state: State = .{};

@@ -23,7 +23,7 @@ pub fn run(comptime thread_count: comptime_int, io: std.Io) !void {
     // Initialize all our threads
     var contexts: [thread_count]Thread = undefined;
     var threads: [contexts.len]std.Thread = undefined;
-    var comps: [contexts.len]xev.Completion = undefined;
+    var comps = [_]xev.Completion{.{}} ** contexts.len;
     for (&contexts, 0..) |*ctx, i| {
         ctx.* = try Thread.init();
         ctx.main_async.wait(&loop, &comps[i], Thread, ctx, mainAsyncCallback);
@@ -82,7 +82,7 @@ const Thread = struct {
         try self.main_async.notify();
 
         // Start our waiter
-        var c: xev.Completion = undefined;
+        var c: xev.Completion = .{};
         self.worker_async.wait(&self.loop, &c, Thread, self, asyncCallback);
 
         // Run

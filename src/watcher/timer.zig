@@ -459,7 +459,7 @@ fn TimerTests(
 
             // Add the timer
             var called = false;
-            var c1: xev.Completion = undefined;
+            var c1: xev.Completion = .{};
             timer.run(&loop, &c1, 1, bool, &called, (struct {
                 fn callback(
                     ud: ?*bool,
@@ -607,7 +607,7 @@ fn TimerTests(
 
             // Add the timer
             var canceled = false;
-            var c1: xev.Completion = undefined;
+            var c1: xev.Completion = .{};
             timer.run(&loop, &c1, 100_000, bool, &canceled, (struct {
                 fn callback(
                     ud: ?*bool,
@@ -622,7 +622,7 @@ fn TimerTests(
 
             // Cancel
             var cancel_confirm = false;
-            var c2: xev.Completion = undefined;
+            var c2: xev.Completion = .{};
             timer.cancel(&loop, &c1, &c2, bool, &cancel_confirm, (struct {
                 fn callback(
                     ud: ?*bool,

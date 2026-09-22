@@ -32,7 +32,7 @@ pub fn run(comptime thread_count: comptime_int, io: std.Io) !void {
     defer notifier.deinit();
 
     const userdata: ?*void = null;
-    var c: xev.Completion = undefined;
+    var c: xev.Completion = .{};
     notifier.wait(&loop, &c, void, userdata, &asyncCallback);
 
     // Initialize all our threads
