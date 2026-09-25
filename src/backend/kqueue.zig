@@ -23,6 +23,7 @@ const CompletionState = looppkg.CompletionState;
 const noopCallback = looppkg.NoopCallback(@This());
 
 const log = std.log.scoped(.libxev_kqueue);
+const trace = @import("../trace.zig");
 
 /// True if this backend is available on this platform.
 pub fn available() bool {
@@ -112,6 +113,12 @@ pub const Loop = struct {
     /// Initialize a new kqueue-backed event loop. See the Options docs
     /// for what options matter for kqueue.
     pub fn init(options: Options) !Loop {
+        // 热路径跟踪开关：默认关闭，LIBXEV_TRACE=1 打开（代价见 ../trace.zig）
+        if (std.c.getenv("LIBXEV_TRACE")) |v| {
+            const s = std.mem.span(v);
+            trace.enabled = s.len > 0 and !std.mem.eql(u8, s, "0");
+        }
+
         // This creates a new kqueue fd
         const fd = try createKqueueFd();
         errdefer xev_posix.close(fd);
@@ -177,13 +184,13 @@ pub const Loop = struct {
         // at submission or tick time.
         completion.flags.state = .adding;
         if (completion.op == .connect) {
-            std.log.debug("[kq:add] connect completion fd={}", .{completion.op.connect.socket});
+            if (trace.enabled) std.log.debug("[kq:add] connect completion fd={}", .{completion.op.connect.socket});
         }
         if (completion.op == .recv) {
-            std.log.debug("[kq:add] recv completion fd={}", .{completion.op.recv.fd});
+            if (trace.enabled) std.log.debug("[kq:add] recv completion fd={}", .{completion.op.recv.fd});
         }
         if (completion.op == .read) {
-            std.log.debug("[kq:add] read completion fd={}", .{completion.op.read.fd});
+            if (trace.enabled) std.log.debug("[kq:add] read completion fd={}", .{completion.op.read.fd});
         }
         self.submissions.push(completion);
     }
@@ -317,13 +324,13 @@ pub const Loop = struct {
             queue_pop: while (queued.pop()) |c| {
                 submit_count += 1;
                 if (c.op == .machport) {
-                    std.log.debug("[kq:submit] machport in queue: port={d} c={d}", .{ c.op.machport.port, @intFromPtr(c) });
+                    if (trace.enabled) std.log.debug("[kq:submit] machport in queue: port={d} c={d}", .{ c.op.machport.port, @intFromPtr(c) });
                 }
                 if (c.op == .connect) {
                     connect_count += 1;
                     if (c.flags.state != .adding) {
                         connect_skipped += 1;
-                        std.log.debug("[kq:submit] connect fd={} state={s} (not adding, skipped)", .{
+                        if (trace.enabled) std.log.debug("[kq:submit] connect fd={} state={s} (not adding, skipped)", .{
                             c.op.connect.socket, @tagName(c.flags.state),
                         });
                     }
@@ -363,7 +370,7 @@ pub const Loop = struct {
             }
 
             if (connect_count > 0) {
-                std.log.debug("[kq:submit] processed {d} submissions, {d} connect", .{ submit_count, connect_count });
+                if (trace.enabled) std.log.debug("[kq:submit] processed {d} submissions, {d} connect", .{ submit_count, connect_count });
             }
 
             // If we have no events then we have to have gone through the entire
@@ -378,7 +385,7 @@ pub const Loop = struct {
                 self.events[0..self.events.len],
                 &timeout,
             );
-            std.log.debug("[kq:submit] kevent completed={d}", .{completed});
+            if (trace.enabled) std.log.debug("[kq:submit] kevent completed={d}", .{completed});
             events_len = 0;
 
             // Go through the completed events and queue them.
@@ -386,7 +393,7 @@ pub const Loop = struct {
             // event list to zero length) because it was leading to
             // memory corruption we need to investigate.
             for (self.events[0..completed]) |ev| {
-                std.log.debug("[kq:submit] event: filter={d} ident={d} udata={d} flags=0x{x} data={d}", .{
+                if (trace.enabled) std.log.debug("[kq:submit] event: filter={d} ident={d} udata={d} flags=0x{x} data={d}", .{
                     ev.filter, ev.ident, ev.udata, ev.flags, ev.data,
                 });
                 // Zero udata values are internal events that we do nothing
@@ -713,7 +720,7 @@ pub const Loop = struct {
                     // at this point for this event.
                     const drop_c: *Completion = @ptrFromInt(@as(usize, @intCast(ev.udata)));
                     if (drop_c.op == .connect) {
-                        std.log.debug("[kq:tick] connect EV_ERROR dropped: fd={} data={}", .{
+                        if (trace.enabled) std.log.debug("[kq:tick] connect EV_ERROR dropped: fd={} data={}", .{
                             @as(u64, @intCast(ev.ident)), ev.data,
                         });
                     }
@@ -723,7 +730,7 @@ pub const Loop = struct {
 
                 const c: *Completion = @ptrFromInt(@as(usize, @intCast(ev.udata)));
                 if (c.op == .connect) {
-                    std.log.debug("[kq:tick] connect event: fd={} filter={} flags=0x{x} data={}", .{
+                    if (trace.enabled) std.log.debug("[kq:tick] connect event: fd={} filter={} flags=0x{x} data={}", .{
                         @as(u64, @intCast(ev.ident)),
                         @as(i16, @intCast(ev.filter)),
                         @as(u16, @bitCast(ev.flags)),
@@ -731,7 +738,7 @@ pub const Loop = struct {
                     });
                 }
                 if (c.op == .recv or c.op == .read) {
-                    std.log.debug("[kq:tick] read/recv event: fd={} filter={} flags=0x{x} data={}", .{
+                    if (trace.enabled) std.log.debug("[kq:tick] read/recv event: fd={} filter={} flags=0x{x} data={}", .{
                         @as(u64, @intCast(ev.ident)),
                         @as(i16, @intCast(ev.filter)),
                         @as(u16, @bitCast(ev.flags)),
@@ -946,7 +953,7 @@ pub const Loop = struct {
                 while (true) {
                     const result = posix.system.connect(v.socket, &v.addr.any, v.addr.getOsSockLen());
                     const e = posix.errno(result);
-                    std.log.debug("[kq:connect] fd={} result={} errno={s}", .{ v.socket, result, @tagName(e) });
+                    if (trace.enabled) std.log.debug("[kq:connect] fd={} result={} errno={s}", .{ v.socket, result, @tagName(e) });
                     switch (e) {
                         // Interrupt, try again
                         .INTR => continue,
@@ -956,13 +963,13 @@ pub const Loop = struct {
                         // when it is complete.
                         .AGAIN, .INPROGRESS => {
                             ev.* = c.kevent().?;
-                            std.log.debug("[kq:connect] registering EVFILT_WRITE fd={}", .{v.socket});
+                            if (trace.enabled) std.log.debug("[kq:connect] registering EVFILT_WRITE fd={}", .{v.socket});
                             break :action .{ .kevent = {} };
                         },
 
                         // Any other error we report
                         else => |errno| {
-                            std.log.debug("[kq:connect] immediate error fd={} errno={s}", .{ v.socket, @tagName(errno) });
+                            if (trace.enabled) std.log.debug("[kq:connect] immediate error fd={} errno={s}", .{ v.socket, @tagName(errno) });
                             break :action .{ .result = errno_to_result(errno) };
                         },
                     }

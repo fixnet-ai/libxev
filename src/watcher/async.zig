@@ -6,6 +6,7 @@ const posix = std.posix;
 const common = @import("common.zig");
 const darwin = @import("../darwin.zig");
 const xev_posix = @import("../posix.zig");
+const trace = @import("../trace.zig");
 
 pub fn Async(comptime xev: type) type {
     if (xev.dynamic) return AsyncDynamic(xev);
@@ -366,7 +367,7 @@ fn AsyncMachPort(comptime xev: type) type {
                     ) xev.CallbackAction {
                         // Drain the mach port so that we only fire one
                         // notification even if many are queued.
-                        std.log.debug("[async.mach] wait cb fired, draining port={d}", .{c_inner.op.machport.port});
+                        if (trace.enabled) std.log.debug("[async.mach] wait cb fired, draining port={d}", .{c_inner.op.machport.port});
                         drain(c_inner.op.machport.port);
 
                         return @call(.always_inline, cb, .{
@@ -442,7 +443,7 @@ fn AsyncMachPort(comptime xev: type) type {
                 0, // Fail instantly if the port is full
                 darwin.MACH_PORT_NULL,
             );
-            std.log.debug("[async.mach] notify port={d} rc={d}", .{ self.port, rc });
+            if (trace.enabled) std.log.debug("[async.mach] notify port={d} rc={d}", .{ self.port, rc });
             return switch (darwin.getMachMsgError(rc)) {
                 .SUCCESS => {},
                 else => |e| {
