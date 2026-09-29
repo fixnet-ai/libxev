@@ -254,7 +254,7 @@ pub const Loop = struct {
         // （写 c，必要时投递 .cancel 回调）——完成回路尚未走完。
         // ⇒ 此处**不得**返回 true：true 的契约是「永无回调、调用方可立即释放宿主」。
         // 与 deleteSync 对齐返回 false（那侧注释早已明写「调用方不得立即释放」）：
-        // 同一情形两个 API 给出相反契约，曾使 fixnet zigbox 在重建路径 SIGSEGV ——
+        // 同一情形两个 API 给出相反契约，曾使 fixnet kisscore 在重建路径 SIGSEGV ——
         // 调用方见 true 即释放会话 arena，而队列 tail 指着 arena 内的该 completion，
         // 下一次 push 的 `tail.next = v` 写未映射页（findings §三十三）。
         // 调用方若要「排空后即可释放」，先调 drainDeletions()。
@@ -607,14 +607,14 @@ pub const Loop = struct {
                                 // loop, or from another thread), this DEL is
                                 // ENOENT — the disarm goal is already achieved.
                                 // Tolerate instead of panicking.
-                                // Observed (fixnet zigbox S14): mass peer
+                                // Observed (fixnet kisscore S14): mass peer
                                 // disconnects on Android -> user closes socket
                                 // while a completion is in flight -> completion
                                 // fires, returns .disarm -> DEL ENOENT.
                                 error.FileDescriptorNotRegistered => {},
                                 // EBADF 变体：fd 不是「已摘注册」而是**已被关闭**，
                                 // 注册同样随 fd 消失 ⇒ 摘除目标已达成（Linux 语义：
-                                // close 隐式摘除 epoll 注册）。实测（fixnet zigbox
+                                // close 隐式摘除 epoll 注册）。实测（fixnet kisscore
                                 // #32，Android 重建路径 + 在途连接）：批量 disarm
                                 // 命中 EBADF，旧代码落进 `else => unreachable`
                                 // → panic → 引擎静默死亡（约 20% 命中率）。

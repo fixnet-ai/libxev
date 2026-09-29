@@ -7,7 +7,7 @@
 ## 项目定位
 
 本仓库是 [mitchellh/libxev](https://github.com/mitchellh/libxev) 的 fixnet fork，
-为 fixnet 生态（zigbox/zigtun/zigproxy/zigdns）提供跨平台异步 I/O 事件循环；
+为 fixnet 生态（kiss-core/zigtun/zigproxy/zigdns）提供跨平台异步 I/O 事件循环；
 处于依赖图最底层，不依赖 zigfoundation。
 
 ## 当前状态

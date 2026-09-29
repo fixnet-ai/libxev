@@ -290,7 +290,7 @@ fn AsyncMachPort(comptime xev: type) type {
             // SEND_NO_BUFFER (queue full) as success assuming "a pending wake
             // exists", but that message is DROPPED when kevent already fired and
             // is draining the previous message → wake can be permanently lost
-            // (zigbox bench-socks5 30s hang, #28 2026-08-25). A larger queue
+            // (kisscore bench-socks5 30s hang, #28 2026-08-25). A larger queue
             // lets notify()s landing inside the drain→re-arm window buffer
             // instead of dropping; drain() in the wait callback clears it all,
             // so multiple queued wakes still coalesce into one callback safely.

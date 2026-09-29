@@ -99,7 +99,7 @@ kqueue/epoll 需要 ThreadPool 的原因：`stream.zig` 在构造 close Completi
 ### 致命场景：ThreadPool 缺失导致静默 fd 泄漏
 
 ```
-1. zigbox 创建 Loop 时未传 ThreadPool
+1. kiss-core 创建 Loop 时未传 ThreadPool
 2. Session 关闭时调用 TCP.close()
 3. stream.zig 设置 flags.threadpool = true
 4. start_completion() 检测到需要 ThreadPool 但未提供
@@ -123,7 +123,7 @@ defer thread_pool.shutdown();
 var loop = try xev.Loop.init(.{ .thread_pool = &thread_pool });
 ```
 
-`ThreadPool.init(.{})` 返回配置结构体（零分配），线程延迟创建。Loop 持有指针，只要 ThreadPool 在 Loop 生命周期内有效即可。zigbox `main()` 中栈分配足够，无需堆分配。
+`ThreadPool.init(.{})` 返回配置结构体（零分配），线程延迟创建。Loop 持有指针，只要 ThreadPool 在 Loop 生命周期内有效即可。kiss-core `main()` 中栈分配足够，无需堆分配。
 
 IOCP / io_uring 后端的 close 不需要 ThreadPool，但传入也无副作用——未使用时不会启动工作线程。
 
@@ -945,7 +945,7 @@ pub fn loadConnectEx(socket: SOCKET) !LPFN_CONNECTEX;
 **与 AcceptEx 的关键差异**：`ConnectEx` 在调用前必须先 `bind()` socket（即使是通配地址），
 否则 `ConnectEx` 返回 `WSAEINVAL`。
 
-**测试**：Windows aarch64 和 x86_64 上 zigbox notun 模式验证通过。
+**测试**：Windows aarch64 和 x86_64 上 kiss-core notun 模式验证通过。
 
 ## IOCP stop_completion 非 IOCP 操作 panic 修复
 
@@ -980,7 +980,7 @@ IOCP 的**提交阶段**（`start_completion`）映射了 12 种 WSA 错误码�
 TCP/IP 协议栈异步检测的网络错误（如 ICMP 目的不可达）在**完成阶段**到达而非提交阶段，
 因此被错误映射为 `error.Unexpected`。
 
-这是 zigbox Windows UDP relay 出现 `error.Unexpected` 的**根本原因**——
+这是 kiss-core Windows UDP relay 出现 `error.Unexpected` 的**根本原因**——
 `WSAEHOSTUNREACH`/`WSAENETUNREACH` 等在 `sendto` completion 时无法被正确识别。
 
 ### 修复（2025-07-26）
