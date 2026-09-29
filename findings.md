@@ -38,7 +38,7 @@
 - 使用指南（close 状态机 / deferred_free / ThreadPool 规则）→ libxev.md
 - xev-1..xev-4（IOCP UDP connect / io_uring CQ overflow / Timer 取消统一 / IOCP 文档）08-24 CLOSE
   留档定案不实施：08-23 08fe943 为移交 commit（迁移至 zigbox 统一规划，非关闭记录），真正关闭记录
-  = zigbox 5473f89（08-24）；权威 = zigbox task_plan「跨项目统一待办」libxev 段（audit #15）。
+  = zigbox 5473f89（08-24）；权威 = **kiss** task_plan「跨项目统一待办」libxev 段（audit #15；该表 2026-09-30 自内核仓迁入 kiss）。
   勿按「开放待办」解读——本库无计划中的功能待办（已知休眠缺口见下「已知缺口」）。
 
 ## 已知缺口（跨仓记录、本仓规划零载体）
