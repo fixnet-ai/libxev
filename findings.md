@@ -2,7 +2,7 @@
 
 > v0.37.0 里程碑：技术定论均已下沉源码注释（简体中文），本文件仅留指针表；
 > 正文细节见 git history 与 libxev.md。xev-1..xev-4 于 08-24 CLOSE 留档（not-do 定案），
-> xev-5..xev-9 均已闭环（各见下方「跨项目指针」/ zigbox 统一待办 libxev 段）。
+> xev-5..xev-9 均已闭环（各见下方「跨项目指针」/ **kiss** 统一待办 libxev 段）。
 
 ## 定论 → 代码注释
 
